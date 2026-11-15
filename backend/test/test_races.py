@@ -1,8 +1,10 @@
 """Two devices on one tracker at once: both pass the checks, then the other one writes first.
 
 ``Racing`` runs the other device's requests just before this request's first write batch,
-which is the worst interleaving the Worker allows. The loser gets the same answer the
-checks give one request later, and the tracker stays as the winner left it.
+which is the worst interleaving the Worker allows. The tracker stays as the winner left
+it. A loser that would break a rule gets the same answer the checks give one request
+later; a Save or Discard last day that lost its day does nothing and answers with the
+current state, which the page then shows.
 """
 
 import asyncio
@@ -82,9 +84,21 @@ def test_save_last_day_racing_start_today_leaves_the_new_day_open_and_unsaved():
     c.now = at(PUNE, "2026-11-15T09:00")
     status, body = race(c, "POST", f"/trackers/{slug}/save-day", None,
                         ("POST", f"/trackers/{slug}/start-today", {**stamp(PUNE, "2026-11-15"), "last_day": "discard"}))
-    assert (status, body) == (409, {"error": "Unlocks when 2026-11-15 ends in Pune (IST).", "code": "day_not_ended"})
-    t = c.tracker(slug)
+    assert status == 200 and body == c.ok("GET", f"/trackers/{slug}")
+    t = body["tracker"]
     assert t["open_day"]["date"] == "2026-11-15" and t["last_outcome"] is None
+    assert c.history(slug)["days"] == []
+
+
+def test_save_last_day_that_lost_to_a_discard_answers_the_discarded_state():
+    c = Client(now_ms=at(PUNE, "2026-11-14T09:00"))
+    slug = c.new_tracker("Workday", 1)
+    c.start_today(slug, "2026-11-14")
+    c.now = at(PUNE, "2026-11-15T09:00")
+    status, body = race(c, "POST", f"/trackers/{slug}/save-day", None, ("POST", f"/trackers/{slug}/discard-day", None))
+    assert status == 200 and body == c.ok("GET", f"/trackers/{slug}")
+    t = body["tracker"]
+    assert t["open_day"] is None and t["saved_day"] is None and t["last_outcome"] == "discarded"
     assert c.history(slug)["days"] == []
 
 
@@ -95,8 +109,8 @@ def test_discard_last_day_racing_start_today_leaves_the_new_day_open():
     c.now = at(PUNE, "2026-11-15T09:00")
     status, body = race(c, "POST", f"/trackers/{slug}/discard-day", None,
                         ("POST", f"/trackers/{slug}/start-today", {**stamp(PUNE, "2026-11-15"), "last_day": "save"}))
-    assert (status, body["code"]) == (409, "day_not_ended")
-    t = c.tracker(slug)
+    assert status == 200 and body == c.ok("GET", f"/trackers/{slug}")
+    t = body["tracker"]
     assert t["open_day"]["date"] == "2026-11-15" and t["last_outcome"] is None
     assert [d["date"] for d in c.history(slug)["days"]] == ["2026-11-14"]
 

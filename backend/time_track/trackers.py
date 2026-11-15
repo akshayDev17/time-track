@@ -187,7 +187,7 @@ async def save_day(db, user_id: int, slug: str, now_ms: int) -> dict:
     if running:
         raise Conflict(f"Stop all timers first: {running} still running.", "timers_running")
     await db.batch(store.save_day_statements(db, tracker["id"], state["tracker"]["open_day"]["date"], now_ms))
-    return await _closed_day(db, user_id, tracker, now_ms, "save")
+    return await get_tracker(db, user_id, slug, now_ms)
 
 
 async def discard_day(db, user_id: int, slug: str, now_ms: int) -> dict:
@@ -195,16 +195,7 @@ async def discard_day(db, user_id: int, slug: str, now_ms: int) -> dict:
     tracker = await _tracker(db, user_id, slug)
     state = await _ended_day(db, tracker, now_ms, "discard")
     await db.batch(store.discard_day_statements(db, tracker["id"], state["tracker"]["open_day"]["date"]))
-    return await _closed_day(db, user_id, tracker, now_ms, "discard")
-
-
-async def _closed_day(db, user_id: int, tracker: dict, now_ms: int, verb: str) -> dict:
-    """The state after Save or Discard last day. A day still open means another device
-    replaced the ended day first; that day answers as it would one request later."""
-    after = await get_tracker(db, user_id, tracker["slug"], now_ms)
-    if after["tracker"]["open_day"] is not None:
-        await _ended_day(db, tracker, now_ms, verb)
-    return after
+    return await get_tracker(db, user_id, slug, now_ms)
 
 
 # ── timers ───────────────────────────────────────────────────────────────────
