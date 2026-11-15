@@ -1,0 +1,27 @@
+{
+  "name": "time-track-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "build:check": "NEXT_DIST_DIR=.next-build next build",
+    "test:lib": "node --experimental-strip-types --test lib/*.test.ts",
+    "test:worker": "node --test worker.test.mjs",
+    "test:export": "node --test export.test.mjs",
+    "test:views": "node --test views.test.mjs"
+  },
+  "dependencies": {
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "playwright-core": "1.64.1",
+    "typescript": "^5.6.0",
+    "wrangler": "4.152.0"
+  }
+}

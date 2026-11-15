@@ -1,0 +1,18 @@
+[project]
+name = "time-track-backend"
+version = "0.1.0"
+description = "Python Cloudflare Worker + D1 backend for Time Track: server-backed multi-timer day trackers."
+requires-python = ">=3.11"
+
+# A PEP 735 dependency group, not an optional extra: `uv run` installs the `dev` group by
+# default, which is what puts `pywrangler` (from workers-py) on the path for the deploy.
+[dependency-groups]
+dev = [
+  "workers-py",
+  "pytest>=8",
+  "pyyaml",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["test"]
