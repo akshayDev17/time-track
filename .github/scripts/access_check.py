@@ -1,8 +1,8 @@
 """Refuse a deploy unless Cloudflare Access guards Time Track the way it should.
 
 Both deploy jobs in .github/workflows/ci.yml run this before they deploy anything: the
-login check that comes before any exposure. Until the owner has applied the Access split in
-docs/deploy.md §A it refuses, so nothing deploys.
+login check that comes before any exposure. Whenever the Access split of docs/deploy.md §A
+is not in place it refuses, so nothing deploys.
 
 It asks the Cloudflare API rather than requesting pages: Cloudflare answers GitHub's runners
 with a bare 403 and no redirect to the Access login, so a curl check (or

@@ -20,7 +20,7 @@ Time Track: multi-timer day tracker at akshayprabhakant.com/time-track (Cloudfla
 - `.github/workflows/ci.yml` — tests, then Deploy API, then Deploy Frontend; both deploys
   refuse unless Cloudflare Access guards the app (`.github/scripts/access_check.py`).
 
-Setup and the planned Access split: [docs/deploy.md](docs/deploy.md).
+Setup, the Access split and local development: [docs/deploy.md](docs/deploy.md).
 
 ## Tests
 
