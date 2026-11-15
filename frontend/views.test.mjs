@@ -231,9 +231,14 @@ test('every view and transition on the board', async () => {
   await phone.setViewportSize({ width: 390, height: 844 });
   await phone.goto(`${app}/time-track/workday`);
   await phone.locator('.tc.run').first().waitFor();
-  const read = (p) => p.locator('.tc.run .tc-disp').first().textContent();
+  // "HH:MM:SS.t" in ms. Each page repaints every 100 ms and the two reads are not one instant,
+  // so the same server state shows within a few tenths, never a second boundary apart.
+  const read = async (p) => {
+    const [h, m, s] = (await p.locator('.tc.run .tc-disp').first().textContent()).split(':').map(Number);
+    return ((h * 60 + m) * 60 + s) * 1000;
+  };
   const [a, b] = await Promise.all([read(page), read(phone)]);
-  assert.equal(a.slice(0, 8), b.slice(0, 8), 'laptop and phone show the same time');
+  assert.ok(a > 0 && Math.abs(a - b) <= 400, `laptop and phone show the same time: ${a} ms vs ${b} ms`);
   await btn(phone, 'Stop Deep work').click();
   await page.locator('.tc.run').waitFor({ state: 'detached', timeout: 8000 });
   await btn(phone, 'Resume Deep work').click();
