@@ -9,7 +9,7 @@ current state, which the page then shows.
 
 import asyncio
 
-from helpers import API, MINUTE, OWNER, PUNE, Client, at, stamp
+from helpers import API, MINUTE, OWNER, PUNE, SITE, Client, at, stamp
 
 from time_track.api import handle
 
@@ -28,14 +28,14 @@ class Racing:
     async def batch(self, statements):
         other, self._other = self._other, []
         for method, path, body in other:
-            status, payload = await handle(self._db, method, API + path, body, OWNER, self._now)
+            status, payload = await handle(self._db, method, API + path, body, OWNER, self._now, SITE, SITE)
             assert status == 200, (status, payload)
         return await self._db.batch(statements)
 
 
 def race(c: Client, method: str, path: str, body, *other: tuple[str, str, dict | None]):
     db = Racing(c.db, c.now, list(other))
-    return asyncio.run(handle(db, method, API + path, body, OWNER, c.now))
+    return asyncio.run(handle(db, method, API + path, body, OWNER, c.now, SITE, SITE))
 
 
 def test_start_today_on_two_devices_opens_one_day_and_the_other_hears_one_day_per_date():

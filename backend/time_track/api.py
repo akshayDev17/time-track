@@ -1,8 +1,12 @@
-"""The HTTP API as one function of (db, method, path, body, email, now_ms).
+"""The HTTP API as one function of (db, method, path, body, email, now_ms, origin, own_origin).
 
 No framework and no I/O of its own: the Worker and the local server each turn a real
 request into these arguments and the returned ``(status, body)`` into a response. Every
-route needs an identity: without one the answer is 401 before any route runs.
+route needs an identity: without one the answer is 401 before any route runs. Every
+request that is not a GET must also come from the app's own pages: the browser's
+``Origin`` header has to equal the origin the app is served from, or the answer is 403.
+Another site can make a signed-in browser send a POST with its Access cookie, but it
+cannot choose that header.
 """
 
 from __future__ import annotations
@@ -72,11 +76,15 @@ ROUTES = [
 COMPILED = [(method, re.compile(pattern + r"/?"), handler) for method, pattern, handler in ROUTES]
 
 
-async def handle(db, method: str, path: str, body: object, email: str | None, now_ms: int) -> tuple[int, dict | None]:
+async def handle(
+    db, method: str, path: str, body: object, email: str | None, now_ms: int, origin: str | None, own_origin: str
+) -> tuple[int, dict | None]:
     if path != PREFIX and not path.startswith(PREFIX + "/"):
         return 404, {"error": "not found"}
     if email is None:
         return 401, {"error": "not signed in"}
+    if method != "GET" and (not origin or origin != own_origin):
+        return 403, {"error": "cross-site request refused"}
     local = path[len(PREFIX):] or "/"
     if body is MALFORMED:
         return 400, {"error": "request body is not valid JSON"}

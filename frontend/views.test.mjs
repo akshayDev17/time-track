@@ -229,8 +229,22 @@ test('every view and transition on the board', async () => {
   // view 12: the same open day on a second device follows within a poll
   const phone = await newPage();
   await phone.setViewportSize({ width: 390, height: 844 });
+  // while its first answer is on its way the page says Loading, never "No such tracker"
+  const firstAnswer = `${api}/time-track/api/trackers/workday`;
+  let release;
+  const held = new Promise((r) => (release = r));
+  await phone.route(firstAnswer, async (route) => {
+    await held;
+    await route.continue();
+  });
+  const asked = phone.waitForRequest(firstAnswer);
   await phone.goto(`${app}/time-track/workday`);
+  await asked;
+  assert.equal(await phone.getByText('Loading…').count(), 1, 'the tracker page waits for its first answer');
+  assert.equal(await phone.getByText('No such tracker').count(), 0, 'a tracker still loading is not a missing one');
+  release();
   await phone.locator('.tc.run').first().waitFor();
+  await phone.unroute(firstAnswer);
   // "HH:MM:SS.t" in ms. Each page repaints every 100 ms and the two reads are not one instant,
   // so the same server state shows within a few tenths, never a second boundary apart.
   const read = async (p) => {

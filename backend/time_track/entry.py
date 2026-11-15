@@ -12,7 +12,7 @@ import time
 from workers import Response, WorkerEntrypoint
 
 from .api import HEADERS, decode_body, handle
-from .auth import access_identity, request_path
+from .auth import access_identity, origin_header, request_origin, request_path
 
 
 def _response(status: int, body: dict | None) -> Response:
@@ -28,5 +28,8 @@ class Default(WorkerEntrypoint):
         body = decode_body(str(await request.text())) if method in ("POST", "PUT", "PATCH") else None
         path = request_path(request)
         email = await access_identity(getattr(self, "ctx", None), path)
-        status, payload = await handle(self.env.DB, method, path, body, email, time.time_ns() // 1_000_000)
+        status, payload = await handle(
+            self.env.DB, method, path, body, email, time.time_ns() // 1_000_000,
+            origin_header(request), request_origin(request),
+        )
         return _response(status, payload)

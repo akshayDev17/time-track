@@ -12,7 +12,8 @@ Environment:
   SIGNED_OUT=1    start signed out: every request is answered the way Access answers a
                   visitor with no session, a 302 to the Access login (the public page then
                   shows the demo)
-  ALLOWED_ORIGIN  the frontend's origin, echoed for CORS (default http://localhost:3000)
+  ALLOWED_ORIGIN  the frontend's origin, echoed for CORS and the only origin whose changes
+                  (anything but a GET) are accepted (default http://localhost:3000)
 
 Dev only, to click every transition through locally:
   POST /__dev/clock {"offset_ms": N}      moves this server's clock N ms ahead (the date
@@ -104,7 +105,9 @@ class Handler(BaseHTTPRequestHandler):
         body = decode_body(raw) if self.command in ("POST", "PUT", "PATCH") else None
         try:
             with LOCK:
-                status, payload = asyncio.run(handle(DB, self.command, path, body, DEV_EMAIL, now_ms()))
+                status, payload = asyncio.run(handle(
+                    DB, self.command, path, body, DEV_EMAIL, now_ms(), self.headers.get("Origin"), ALLOWED_ORIGIN,
+                ))
         except Exception:  # noqa: BLE001 - a bug is a 500, not a dropped connection
             traceback.print_exc()
             status, payload = 500, {"error": "internal error"}

@@ -34,6 +34,24 @@ def request_path(request) -> str:
         return ""
 
 
+def request_origin(request) -> str:
+    """The origin the request was sent to (``scheme://host``), or ``""`` when the URL cannot be read."""
+    try:
+        url = urlsplit(str(request.url))
+    except Exception:
+        return ""
+    return f"{url.scheme}://{url.netloc}" if url.scheme and url.netloc else ""
+
+
+def origin_header(request) -> str | None:
+    """The browser's ``Origin`` header, or ``None`` when the request carries none."""
+    try:
+        value = request.headers.get("origin")
+    except Exception:
+        return None
+    return str(value) if value else None
+
+
 def normalize_email(email: str | None) -> str | None:
     """Identity is case-insensitive. Blank is no identity."""
     value = (email or "").strip().lower()

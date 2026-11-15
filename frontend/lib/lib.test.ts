@@ -8,6 +8,8 @@ import { applyDemo, freshDemo, parseDemo } from './demo.ts';
 import { SAMPLE_DAYS } from './sample.ts';
 import { slugOf } from './paths.ts';
 import { better, sampleOf } from './clock.ts';
+import { ApiError } from './api.ts';
+import { LOADING, changeFailed, changed, dismissed, pollFailed, polled } from './load.ts';
 import type { HistoryResponse, Timer, Tracker } from './types.ts';
 
 const PUNE = 'Asia/Kolkata';
@@ -190,6 +192,57 @@ test('sample data is fixed: ten timers, thirty days', () => {
   // the board's seeded generator: the same numbers on every load
   assert.deepEqual(SAMPLE_DAYS[0].slice(0, 6), [81, 149, 92, 141, 90, 120]);
   assert.equal(SAMPLE_DAYS.flat().filter((v) => v === null).length, 51);
+});
+
+// ── what a tracker page knows, answer by answer ──────────────────────────────
+
+const OFFLINE = new TypeError('Failed to fetch');
+const GONE = new ApiError(404, 'No such tracker.');
+const SIGNED_OUT = new ApiError(401, 'Not signed in.', '', true);
+
+test('load: the first answer ends loading; a 404 is a missing tracker', () => {
+  const t = tracker({});
+  assert.deepEqual(LOADING, { tracker: null, missing: false, expired: false, error: null, pollError: null });
+  assert.deepEqual(polled(LOADING, t), { ...LOADING, tracker: t });
+  assert.deepEqual(pollFailed(LOADING, GONE), { ...LOADING, missing: true });
+});
+
+test('load: a failed poll keeps the tracker and its message goes with the next good poll', () => {
+  const t = tracker({});
+  const asleep = pollFailed(polled(LOADING, t), OFFLINE);
+  assert.deepEqual(asleep, { ...LOADING, tracker: t, pollError: 'Failed to fetch' });
+  const later = tracker({ name: 'Renamed elsewhere' });
+  assert.deepEqual(polled(asleep, later), { ...LOADING, tracker: later });
+  // a first load that failed recovers the same way
+  assert.deepEqual(polled(pollFailed(LOADING, OFFLINE), t), { ...LOADING, tracker: t });
+  assert.deepEqual(dismissed(asleep), { ...LOADING, tracker: t });
+});
+
+test('load: a tracker deleted on another device is dropped by the poll that finds it gone', () => {
+  const shown = changeFailed(polled(LOADING, tracker({})), new ApiError(409, '15 of 15: the most a tracker holds.', 'timer_cap'));
+  assert.deepEqual(pollFailed(shown, GONE), { ...LOADING, missing: true });
+});
+
+test('load: an expired sign-in keeps the tracker and ends with the next answer', () => {
+  const t = tracker({});
+  const expired = pollFailed(polled(LOADING, t), SIGNED_OUT);
+  assert.deepEqual(expired, { ...LOADING, tracker: t, expired: true });
+  assert.deepEqual(polled(expired, t), { ...LOADING, tracker: t });
+  assert.deepEqual(changeFailed(polled(LOADING, t), new ApiError(401, 'not signed in')), expired);
+  assert.deepEqual(changed(t), { ...LOADING, tracker: t });
+});
+
+test('load: a refused change stays through polls until dismissed or a change goes through', () => {
+  const t = tracker({});
+  const refused = changeFailed(polled(LOADING, t), new ApiError(409, '15 of 15: the most a tracker holds.', 'timer_cap'));
+  assert.equal(refused.error, '15 of 15: the most a tracker holds.');
+  assert.equal(refused.tracker, t);
+  assert.equal(polled(refused, t).error, '15 of 15: the most a tracker holds.');
+  assert.equal(pollFailed(refused, OFFLINE).error, '15 of 15: the most a tracker holds.');
+  assert.equal(dismissed(refused).error, null);
+  assert.equal(changed(t).error, null);
+  assert.equal(changeFailed(polled(LOADING, t), OFFLINE).error, 'Failed to fetch');
+  assert.equal(changeFailed(polled(LOADING, t), 'not an Error').error, 'Something went wrong.');
 });
 
 // ── paths and the clock ──────────────────────────────────────────────────────

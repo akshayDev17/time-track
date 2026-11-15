@@ -1,7 +1,7 @@
 """Trackers: create, list, Delete tracker, the Charts page's history, per-user isolation and
 the router's edges (answers 12, 13, 14, 19, C7, C8)."""
 
-from helpers import API, MINUTE, OTHER, PUNE, Client, at
+from helpers import API, MINUTE, OTHER, PUNE, SITE, Client, at
 
 from time_track import rules
 
@@ -132,6 +132,6 @@ def test_router_edges():
     assert c.call("GET", "/nope")[0] == 404
     assert c.call("PUT", "/trackers")[0] == 405
     assert c.call("POST", "/trackers", ["not", "an", "object"])[0] == 422
-    assert asyncio.run(handle(c.db, "POST", API + "/trackers", MALFORMED, c.email, c.now))[0] == 400
-    assert asyncio.run(handle(c.db, "GET", "/quiz/api/me", None, c.email, c.now))[0] == 404
+    assert asyncio.run(handle(c.db, "POST", API + "/trackers", MALFORMED, c.email, c.now, SITE, SITE))[0] == 400
+    assert asyncio.run(handle(c.db, "GET", "/quiz/api/me", None, c.email, c.now, SITE, SITE))[0] == 404
     assert c.call("GET", "/trackers/")[0] == 200

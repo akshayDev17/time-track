@@ -1,39 +1,38 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getTracker, isSignedOut, ApiError } from '../../lib/api';
-import type { Tracker, TrackerResponse } from '../../lib/types';
+import { getTracker, ApiError } from '../../lib/api';
+import { LOADING, changed, changeFailed, dismissed, pollFailed, polled, type Load } from '../../lib/load';
+import type { TrackerResponse } from '../../lib/types';
 
 /** How often a visible tracker page asks the server for changes made on other devices. */
 export const POLL_MS = 3000;
 const CHANNEL = 'time-track';
 
-export type Load = { tracker: Tracker | null; missing: boolean; expired: boolean; error: string | null };
-
 /**
  * One tracker's server state, kept fresh: polled while the tab is visible, reloaded when it
  * comes back, and announced to this browser's other tabs (BroadcastChannel) after each change
  * so they follow at once. `run` sends one change and takes the server's answer as the state.
+ *
+ * `slug` is undefined until the page has read its URL (nothing is known yet, nothing is
+ * asked) and null when the URL names no tracker (missing, without asking).
  */
-export function useTracker(slug: string | null) {
-  const [state, setState] = useState<Load>({ tracker: null, missing: false, expired: false, error: null });
+export function useTracker(slug: string | null | undefined) {
+  const [state, setState] = useState<Load>(LOADING);
   const busy = useRef(0);
   const changes = useRef(0);
   const channel = useRef<BroadcastChannel | null>(null);
 
-  const fail = useCallback((e: unknown) => {
-    if (isSignedOut(e)) setState((s) => ({ ...s, expired: true }));
-    else if (e instanceof ApiError && e.status === 404) setState((s) => ({ ...s, missing: true }));
-    else setState((s) => ({ ...s, error: e instanceof Error ? e.message : 'Something went wrong.' }));
-  }, []);
-
   const load = useCallback(() => {
     if (!slug || busy.current) return;
     const sent = changes.current;
-    getTracker(slug).then((r) => {
-      if (!busy.current && changes.current === sent) setState((s) => ({ ...s, tracker: r.tracker, missing: false }));
-    }, fail);
-  }, [slug, fail]);
+    getTracker(slug).then(
+      (r) => {
+        if (!busy.current && changes.current === sent) setState((s) => polled(s, r.tracker));
+      },
+      (e) => setState((s) => pollFailed(s, e)),
+    );
+  }, [slug]);
 
   const run = useCallback(
     async (call: () => Promise<TrackerResponse>): Promise<ApiError | null> => {
@@ -41,28 +40,21 @@ export function useTracker(slug: string | null) {
       changes.current += 1;
       try {
         const r = await call();
-        setState((s) => ({ ...s, tracker: r.tracker, error: null }));
+        setState(changed(r.tracker));
         channel.current?.postMessage({ slug });
         return null;
       } catch (e) {
-        if (e instanceof ApiError && e.status === 409) {
-          setState((s) => ({ ...s, error: e.message }));
-          return e;
-        }
-        fail(e);
+        setState((s) => changeFailed(s, e));
         return e instanceof ApiError ? e : null;
       } finally {
         busy.current -= 1;
       }
     },
-    [slug, fail],
+    [slug],
   );
 
   useEffect(() => {
-    if (!slug) {
-      setState((s) => ({ ...s, missing: true }));
-      return;
-    }
+    if (!slug) return;
     load();
     const poll = setInterval(() => {
       if (document.visibilityState === 'visible') load();
@@ -88,6 +80,14 @@ export function useTracker(slug: string | null) {
     };
   }, [slug, load]);
 
-  const clearError = useCallback(() => setState((s) => ({ ...s, error: null })), []);
-  return { ...state, run, reload: load, clearError };
+  const clearError = useCallback(() => setState(dismissed), []);
+  return {
+    tracker: state.tracker,
+    missing: slug === null || state.missing,
+    expired: state.expired,
+    error: state.error ?? state.pollError,
+    run,
+    reload: load,
+    clearError,
+  };
 }

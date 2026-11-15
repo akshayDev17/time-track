@@ -14,6 +14,7 @@ MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
 API = "/time-track/api"
 OWNER = "owner@example.com"
 OTHER = "someone-else@example.com"
+SITE = "https://akshayprabhakant.com"
 
 PUNE = "Asia/Kolkata"
 MINUTE = 60_000
@@ -43,12 +44,13 @@ def stamp(tz: str, day: str, label: str = "Pune (IST)") -> dict:
 
 
 class Client:
-    """Calls ``api.handle`` as one signed-in user, at the test's clock."""
+    """Calls ``api.handle`` as one signed-in user on the app's own pages, at the test's clock."""
 
     def __init__(self, db=None, email: str | None = OWNER, now_ms: int | None = None):
         self.db = db or fresh_db()
         self.email = email
         self.now = now_ms if now_ms is not None else at(PUNE, "2026-11-15T09:02")
+        self.origin: str | None = SITE
 
     def as_user(self, email: str | None) -> "Client":
         other = Client(self.db, email, self.now)
@@ -58,7 +60,7 @@ class Client:
         self.now += ms
 
     def call(self, method: str, path: str, body=None) -> tuple[int, dict | None]:
-        return asyncio.run(handle(self.db, method, API + path, body, self.email, self.now))
+        return asyncio.run(handle(self.db, method, API + path, body, self.email, self.now, self.origin, SITE))
 
     def ok(self, method: str, path: str, body=None) -> dict | None:
         status, payload = self.call(method, path, body)

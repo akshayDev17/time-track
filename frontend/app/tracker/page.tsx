@@ -42,7 +42,7 @@ export default function TrackerPage() {
     setSlug(slugOf(window.location.pathname));
     api.getMe().then((me) => setEmail(me.email), () => {});
   }, []);
-  const { tracker, missing, expired, error, run, clearError } = useTracker(slug === undefined ? null : slug);
+  const { tracker, missing, expired, error, run, clearError } = useTracker(slug);
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [prompt, setPrompt] = useState(false);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
