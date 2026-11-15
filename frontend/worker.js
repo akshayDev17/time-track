@@ -1,6 +1,13 @@
 /**
  * Serves the static export of Time Track at /time-track and /time-track/*.
  *
+ * The route is `akshayprabhakant.com/time-track*`: Workers routes match the query string too
+ * and a pattern cannot hold one, so only a trailing `*` catches `/time-track?x=1`. That route
+ * also catches unrelated paths such as `/time-trackfoo` or `/time-track.html`; those go to the
+ * zone's origin untouched (`fetch(req)`). `/time-track?<query>` is served in place, like
+ * `/time-track`, not redirected to `/time-track/?<query>`: the bare path is public and the
+ * slash form is sign-in only, so a redirect would add a sign-in.
+ *
  * The export is built with basePath /time-track, but the files in `out/` sit at the root of
  * the ASSETS binding, so the prefix is stripped before the lookup, and a same-origin redirect
  * ASSETS answers (`/new/` -> `/new`) is re-prefixed on the way out, or the browser would
@@ -34,8 +41,10 @@ export function assetPath(pathname) {
 export default {
   async fetch(req, env) {
     const u = new URL(req.url);
+    const ours = PREFIX.test(u.pathname);
     u.pathname = u.pathname.replace(PREFIX, '') || '/';
     if (u.pathname.startsWith('/_site/') && env.SHELL) return env.SHELL.fetch(new Request(u, req));
+    if (!ours) return fetch(req);
     u.pathname = assetPath(u.pathname);
     const page = async () => reprefixRedirect(await env.ASSETS.fetch(new Request(u, req)), u);
     return withShell(await page(), env, page, 'time-track', '/time-track/_site/');
