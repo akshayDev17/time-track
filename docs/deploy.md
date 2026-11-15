@@ -102,18 +102,25 @@ migrations, Worker), then Deploy Frontend (Access guard, build, Worker).
 
 ```sh
 cd backend && uv sync && uv run python local_server.py      # API on 127.0.0.1:8787
-cd frontend && npm ci && npm run dev                         # http://localhost:3000/time-track
+cd frontend && npm ci && NEXT_PUBLIC_API_BASE=http://127.0.0.1:8787 npm run dev
 ```
+
+Open http://localhost:3000/time-track. The pages call the API at `NEXT_PUBLIC_API_BASE`
+(without it they would ask `next dev` itself, which has no API), and `local_server.py` takes
+changes only from the pages' origin, `ALLOWED_ORIGIN` (default `http://localhost:3000`), so
+open the pages at exactly that address.
 
 `next dev` has no `worker.js`, so tracker URLs (`/time-track/<slug>`) do not resolve there and
 the page has no theme or site row. For the real thing, build against the local API and run
 the Worker with site-shell (`SITE_THEMES_DIR` is a checkout of akshayDev17/site-themes):
 
 ```sh
-NEXT_PUBLIC_API_BASE=http://127.0.0.1:8787 npm run build
-npx wrangler dev -c wrangler.jsonc -c "$SITE_THEMES_DIR/shell/wrangler.jsonc" --port 8788
 ALLOWED_ORIGIN=http://127.0.0.1:8788 uv run python local_server.py   # in backend/
+NEXT_PUBLIC_API_BASE=http://127.0.0.1:8787 npm run build             # in frontend/
+npx wrangler dev -c wrangler.jsonc -c "$SITE_THEMES_DIR/shell/wrangler.jsonc" --ip 127.0.0.1 --port 8788
 ```
+
+Open http://127.0.0.1:8788/time-track, the `ALLOWED_ORIGIN` given above.
 
 `local_server.py` documents its dev-only switches (signed out, moving its clock past midnight).
 `npm run test:views` does all of this itself and clicks through every view.
