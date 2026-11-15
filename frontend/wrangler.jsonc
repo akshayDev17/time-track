@@ -9,10 +9,11 @@
   // /_next/* or /vendors/* is claimed: basePath keeps every chunk under /time-track/_next/.
   "workers_dev": false,
   "routes": [
-    // The bare path needs its own entry: `time-track/*` matches everything under
-    // /time-track/ but not /time-track itself.
-    { "pattern": "akshayprabhakant.com/time-track", "zone_name": "akshayprabhakant.com" },
-    { "pattern": "akshayprabhakant.com/time-track/*", "zone_name": "akshayprabhakant.com" }
+    // One route for /time-track, /time-track?<query> and /time-track/*. Routes match the
+    // query string too and a pattern cannot hold one, so an exact `time-track` would miss
+    // /time-track?x=1 (it fell through to GitHub Pages' 404). The `*` also catches
+    // /time-trackfoo and the like; worker.js passes those to the origin untouched.
+    { "pattern": "akshayprabhakant.com/time-track*", "zone_name": "akshayprabhakant.com" }
   ],
 
   // The Next.js static export (`npm run build`). `run_worker_first` so the prefix is

@@ -86,3 +86,43 @@ test('/_site/ files forward to site-shell', async () => {
   const env = { ASSETS: assets({}), SHELL };
   assert.equal(await (await get('/time-track/_site/abc/site.js', env)).text(), 'shell:/_site/abc/site.js');
 });
+
+test('/time-track?<query> is served in place like /time-track, never redirected', async () => {
+  const A = assets({ '/': 'home' });
+  const env = { ASSETS: A };
+  for (const path of ['/time-track?x=1', '/time-track?', '/time-track?g=a%20b&c']) {
+    const res = await get(path, env);
+    assert.equal(res.status, 200, path);
+    assert.equal(await res.text(), 'home', path);
+  }
+  assert.deepEqual(A.seen, ['/', '/', '/']);
+});
+
+test('paths the time-track* route catches outside the app reach the origin as the same Request', async () => {
+  const origFetch = globalThis.fetch;
+  const forwarded = [];
+  globalThis.fetch = async (req) => {
+    forwarded.push(req);
+    return new Response('origin', { status: 404 });
+  };
+  const A = assets({ '/tracker': 'tracker' });
+  const SHELL = {
+    async fetch() { throw new Error('site-shell must not be called'); },
+    async compose() { throw new Error('site-shell must not be called'); },
+  };
+  try {
+    // /time-trackfoo would otherwise match the tracker-slug mapping after a bad strip.
+    const paths = ['/time-trackfoo', '/time-trackfoo?x=1', '/time-tracks', '/time-track.html', '/time-track-x/y?x=1'];
+    for (const path of paths) {
+      const req = new Request(`https://akshayprabhakant.com${path}`, { method: 'POST', body: 'b' });
+      const res = await worker.fetch(req, { ASSETS: A, SHELL });
+      assert.equal(res.status, 404, path);
+      assert.equal(await res.text(), 'origin', path);
+      assert.equal(forwarded.at(-1), req, path);
+    }
+    assert.equal(forwarded.length, paths.length);
+    assert.deepEqual(A.seen, []);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

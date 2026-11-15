@@ -11,7 +11,7 @@
 	// Reachable only through the site's own path, never workers.dev.
 	"workers_dev": false,
 	"routes": [
-		// The API only. More specific than the frontend's time-track/*, so it wins.
+		// The API only. More specific than the frontend's time-track*, so it wins.
 		{
 			"pattern": "akshayprabhakant.com/time-track/api/*",
 			"zone_name": "akshayprabhakant.com"

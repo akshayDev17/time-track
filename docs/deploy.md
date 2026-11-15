@@ -12,12 +12,15 @@ what each one is and how to redo it.
 
 ```
 akshayprabhakant.com/time-track/api/*         → backend Worker  (Python + D1)    backend/wrangler.jsonc
-akshayprabhakant.com/time-track, /time-track/* → frontend Worker (static export)  frontend/wrangler.jsonc
-everything else                                → unchanged
+akshayprabhakant.com/time-track*              → frontend Worker (static export)  frontend/wrangler.jsonc
+everything else                               → unchanged
 ```
 
-The routes come from the two `wrangler.jsonc` files. No site-wide path (`/api/*`, `/_next/*`,
-`/vendors/*`) is claimed: the export's code lives under `/time-track/_next/`.
+The routes come from the two `wrangler.jsonc` files. The frontend route ends in `*` because
+Workers routes match the query string too, so only a trailing `*` catches `/time-track?x=1`;
+it also catches paths like `/time-trackfoo`, which `worker.js` passes to the origin untouched.
+No site-wide path (`/api/*`, `/_next/*`, `/vendors/*`) is claimed: the export's code lives
+under `/time-track/_next/`.
 
 Cost: Workers Free and D1's free tier. No Durable Objects or other paid feature. A visible
 tracker page asks the API every 3 s (only while the tab is visible), so one tab left open and
