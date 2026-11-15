@@ -8,7 +8,7 @@ It asks the Cloudflare API rather than requesting pages: Cloudflare answers GitH
 with a bare 403 and no redirect to the Access login, so a curl check (or
 `portfolio-app verify`, which is that curl) cannot pass in CI; the quiz app and the archive
 found this and check the API the same way. The deploy token needs the account permission
-"Access: Apps and Policies Read" (docs/deploy.md §E).
+"Access: Apps and Policies Read" (docs/deploy.md §C).
 
 The rules (docs/deploy.md §A):
 
@@ -188,7 +188,7 @@ def main():
     token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
     account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
     if not token or not account:
-        fail("CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must both be set under Settings → Environments → production → Environment secrets (docs/deploy.md §E). Refusing to deploy.")
+        fail("CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must both be set under Settings → Environments → production → Environment secrets (docs/deploy.md §C). Refusing to deploy.")
 
     def call(endpoint):
         req = urllib.request.Request(
