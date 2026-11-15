@@ -231,19 +231,26 @@ async def rename_timer(db, tracker_id: int, timer_id: int, name: str) -> None:
 _CURRENT_COUNT = "(SELECT COUNT(*) FROM timers c WHERE c.tracker_id = ? AND c.removed_on IS NULL)"
 
 
-async def add_timer(db, tracker_id: int, cap: int) -> None:
-    """Add a timer at zero to the open day, unless the tracker already holds ``cap``."""
-    await db.batch([
-        db.prepare(
-            "INSERT INTO timers (tracker_id, position, name) "
-            f"SELECT ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM timers WHERE tracker_id = ?), '' WHERE {_CURRENT_COUNT} < ?"
-        ).bind(tracker_id, tracker_id, tracker_id, cap),
-        db.prepare(
-            "INSERT INTO open_day_timers (timer_id, tracker_id) "
-            "SELECT t.id, ? FROM timers t WHERE t.tracker_id = ? AND t.removed_on IS NULL "
-            "AND NOT EXISTS (SELECT 1 FROM open_day_timers o WHERE o.timer_id = t.id)"
-        ).bind(tracker_id, tracker_id),
-    ])
+async def add_timer(db, tracker_id: int, cap: int) -> bool:
+    """Add a timer at zero to the open day. False, with nothing written, when the tracker
+    already holds ``cap``: the new timer gets no position and the batch fails."""
+    try:
+        await db.batch([
+            db.prepare(
+                "INSERT INTO timers (tracker_id, position, name) VALUES (?, CASE WHEN "
+                f"{_CURRENT_COUNT} < ? THEN (SELECT COALESCE(MAX(position), 0) + 1 FROM timers WHERE tracker_id = ?) END, '')"
+            ).bind(tracker_id, tracker_id, cap, tracker_id),
+            db.prepare(
+                "INSERT INTO open_day_timers (timer_id, tracker_id) "
+                "SELECT t.id, ? FROM timers t WHERE t.tracker_id = ? AND t.removed_on IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM open_day_timers o WHERE o.timer_id = t.id)"
+            ).bind(tracker_id, tracker_id),
+        ])
+    except Exception as error:
+        if "NOT NULL constraint failed: timers.position" in str(error):
+            return False
+        raise
+    return True
 
 
 async def remove_timer(db, tracker_id: int, timer_id: int, removed_on: str) -> None:

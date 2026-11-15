@@ -82,9 +82,23 @@ def test_save_last_day_racing_start_today_leaves_the_new_day_open_and_unsaved():
     c.now = at(PUNE, "2026-11-15T09:00")
     status, body = race(c, "POST", f"/trackers/{slug}/save-day", None,
                         ("POST", f"/trackers/{slug}/start-today", {**stamp(PUNE, "2026-11-15"), "last_day": "discard"}))
-    assert status == 200
-    assert body["tracker"]["open_day"]["date"] == "2026-11-15" and body["tracker"]["last_outcome"] is None
+    assert (status, body) == (409, {"error": "Unlocks when 2026-11-15 ends in Pune (IST).", "code": "day_not_ended"})
+    t = c.tracker(slug)
+    assert t["open_day"]["date"] == "2026-11-15" and t["last_outcome"] is None
     assert c.history(slug)["days"] == []
+
+
+def test_discard_last_day_racing_start_today_leaves_the_new_day_open():
+    c = Client(now_ms=at(PUNE, "2026-11-14T09:00"))
+    slug = c.new_tracker("Workday", 1)
+    c.start_today(slug, "2026-11-14")
+    c.now = at(PUNE, "2026-11-15T09:00")
+    status, body = race(c, "POST", f"/trackers/{slug}/discard-day", None,
+                        ("POST", f"/trackers/{slug}/start-today", {**stamp(PUNE, "2026-11-15"), "last_day": "save"}))
+    assert (status, body["code"]) == (409, "day_not_ended")
+    t = c.tracker(slug)
+    assert t["open_day"]["date"] == "2026-11-15" and t["last_outcome"] is None
+    assert [d["date"] for d in c.history(slug)["days"]] == ["2026-11-14"]
 
 
 def test_new_tracker_with_one_name_from_two_tabs_numbers_the_second():
@@ -100,8 +114,10 @@ def test_add_timer_on_two_devices_at_fourteen_stops_at_fifteen():
     slug = c.new_tracker("Workday", 14)
     c.start_today(slug)
     status, body = race(c, "POST", f"/trackers/{slug}/timers", None, ("POST", f"/trackers/{slug}/timers", None))
-    assert status == 200 and len(body["tracker"]["timers"]) == 15
-    assert len(c.tracker(slug)["timers"]) == 15
+    assert (status, body) == (409, {"error": "15 of 15: the most a tracker holds.", "code": "timer_cap"})
+    t = c.tracker(slug)
+    assert len(t["timers"]) == 15 and all(x["acc_ms"] == 0 for x in t["timers"])
+    c.ok("POST", f"/trackers/{slug}/timers/{t['timers'][-1]['id']}/start")
 
 
 def test_remove_timer_on_two_devices_at_two_keeps_the_last_timer():
@@ -111,5 +127,6 @@ def test_remove_timer_on_two_devices_at_two_keeps_the_last_timer():
     a, b = c.timer_ids(slug)
     c.advance(MINUTE)
     status, body = race(c, "DELETE", f"/trackers/{slug}/timers/{a}", None, ("DELETE", f"/trackers/{slug}/timers/{b}", None))
-    assert status == 200 and [t["id"] for t in body["tracker"]["timers"]] == [a]
+    assert (status, body) == (409, {"error": "A tracker keeps at least one timer.", "code": "last_timer"})
+    assert c.timer_ids(slug) == [a]
     c.ok("POST", f"/trackers/{slug}/timers/{a}/start")

@@ -11,6 +11,8 @@ from . import rules, store
 from .errors import Conflict, Invalid, NotFound
 
 ONE_DAY_PER_DATE = "Today already has its day. One day per date."
+TIMER_CAP = f"{rules.MAX_TIMERS} of {rules.MAX_TIMERS}: the most a tracker holds."
+LAST_TIMER = "A tracker keeps at least one timer."
 
 
 # ── reads ────────────────────────────────────────────────────────────────────
@@ -185,7 +187,7 @@ async def save_day(db, user_id: int, slug: str, now_ms: int) -> dict:
     if running:
         raise Conflict(f"Stop all timers first: {running} still running.", "timers_running")
     await db.batch(store.save_day_statements(db, tracker["id"], state["tracker"]["open_day"]["date"], now_ms))
-    return await get_tracker(db, user_id, slug, now_ms)
+    return await _closed_day(db, user_id, tracker, now_ms, "save")
 
 
 async def discard_day(db, user_id: int, slug: str, now_ms: int) -> dict:
@@ -193,7 +195,16 @@ async def discard_day(db, user_id: int, slug: str, now_ms: int) -> dict:
     tracker = await _tracker(db, user_id, slug)
     state = await _ended_day(db, tracker, now_ms, "discard")
     await db.batch(store.discard_day_statements(db, tracker["id"], state["tracker"]["open_day"]["date"]))
-    return await get_tracker(db, user_id, slug, now_ms)
+    return await _closed_day(db, user_id, tracker, now_ms, "discard")
+
+
+async def _closed_day(db, user_id: int, tracker: dict, now_ms: int, verb: str) -> dict:
+    """The state after Save or Discard last day. A day still open means another device
+    replaced the ended day first; that day answers as it would one request later."""
+    after = await get_tracker(db, user_id, tracker["slug"], now_ms)
+    if after["tracker"]["open_day"] is not None:
+        await _ended_day(db, tracker, now_ms, verb)
+    return after
 
 
 # ── timers ───────────────────────────────────────────────────────────────────
@@ -256,9 +267,8 @@ async def rename_timer(db, user_id: int, slug: str, timer_id: int, body: dict, n
 
 async def add_timer(db, user_id: int, slug: str, now_ms: int) -> dict:
     tracker, state = await _live(db, user_id, slug, now_ms)
-    if len(state["tracker"]["timers"]) >= rules.MAX_TIMERS:
-        raise Conflict(f"{rules.MAX_TIMERS} of {rules.MAX_TIMERS}: the most a tracker holds.", "timer_cap")
-    await store.add_timer(db, tracker["id"], rules.MAX_TIMERS)
+    if len(state["tracker"]["timers"]) >= rules.MAX_TIMERS or not await store.add_timer(db, tracker["id"], rules.MAX_TIMERS):
+        raise Conflict(TIMER_CAP, "timer_cap")
     return await get_tracker(db, user_id, slug, now_ms)
 
 
@@ -266,6 +276,9 @@ async def remove_timer(db, user_id: int, slug: str, timer_id: int, now_ms: int) 
     tracker, state = await _live(db, user_id, slug, now_ms)
     timer = _timer(state, timer_id)
     if len(state["tracker"]["timers"]) <= 1:
-        raise Conflict("A tracker keeps at least one timer.", "last_timer")
+        raise Conflict(LAST_TIMER, "last_timer")
     await store.remove_timer(db, tracker["id"], timer["id"], state["tracker"]["open_day"]["date"])
-    return await get_tracker(db, user_id, slug, now_ms)
+    after = await get_tracker(db, user_id, slug, now_ms)
+    if any(t["id"] == timer["id"] for t in after["tracker"]["timers"]):
+        raise Conflict(LAST_TIMER, "last_timer")
+    return after
