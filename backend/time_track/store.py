@@ -9,6 +9,12 @@ from __future__ import annotations
 _TRACKER = "SELECT id, user_id, slug, name, last_outcome FROM trackers"
 
 
+def is_unique_violation(error: BaseException) -> bool:
+    """A write lost a race to a UNIQUE or PRIMARY KEY row another request just wrote
+    (``sqlite3.IntegrityError`` and D1's error both say so in their message)."""
+    return "UNIQUE constraint failed" in str(error)
+
+
 async def upsert_user(db, email: str, now_ms: int) -> int:
     await db.prepare(
         "INSERT INTO users (email, created_at_ms) VALUES (?, ?) ON CONFLICT(email) DO NOTHING"
@@ -113,15 +119,16 @@ async def history(db, tracker_id: int) -> tuple[list[dict], list[dict], list[dic
 
 # ── day writes, as statement lists for one batch ─────────────────────────────
 
-def save_day_statements(db, tracker_id: int, now_ms: int) -> list:
-    """Move the open day into History. A timer still running is saved with its time up to
-    now, so a run started between the check and this batch is never lost."""
+def save_day_statements(db, tracker_id: int, date: str, now_ms: int) -> list:
+    """Move the open day of ``date`` into History. A timer still running is saved with its
+    time up to now, so a run started between the check and this batch is never lost. When
+    another request has already replaced that day, nothing changes."""
     return [
         db.prepare(
             """INSERT INTO history_days (tracker_id, date, tz, tz_label, day_start_ms, day_end_ms, started_at_ms, saved_at_ms)
                SELECT tracker_id, date, tz, tz_label, day_start_ms, day_end_ms, started_at_ms, ?
-                 FROM open_days WHERE tracker_id = ?"""
-        ).bind(now_ms, tracker_id),
+                 FROM open_days WHERE tracker_id = ? AND date = ?"""
+        ).bind(now_ms, tracker_id, date),
         db.prepare(
             """INSERT INTO history_values (day_id, timer_id, ms)
                SELECT h.id, o.timer_id,
@@ -130,18 +137,24 @@ def save_day_statements(db, tracker_id: int, now_ms: int) -> list:
                  JOIN open_days d ON d.tracker_id = o.tracker_id
                  JOIN history_days h ON h.tracker_id = d.tracker_id AND h.date = d.date
                  JOIN timers t ON t.id = o.timer_id AND t.removed_on IS NULL
-                WHERE o.tracker_id = ?"""
-        ).bind(now_ms, tracker_id),
-        db.prepare("DELETE FROM open_days WHERE tracker_id = ?").bind(tracker_id),
-        db.prepare("UPDATE trackers SET last_outcome = 'saved' WHERE id = ?").bind(tracker_id),
+                WHERE o.tracker_id = ? AND d.date = ?"""
+        ).bind(now_ms, tracker_id, date),
+        *_close_day_statements(db, tracker_id, date, "saved"),
     ]
 
 
-def discard_day_statements(db, tracker_id: int) -> list:
-    """Delete the open day completely: its times never reach History."""
+def discard_day_statements(db, tracker_id: int, date: str) -> list:
+    """Delete the open day of ``date`` completely: its times never reach History."""
+    return _close_day_statements(db, tracker_id, date, "discarded")
+
+
+def _close_day_statements(db, tracker_id: int, date: str, outcome: str) -> list:
     return [
-        db.prepare("DELETE FROM open_days WHERE tracker_id = ?").bind(tracker_id),
-        db.prepare("UPDATE trackers SET last_outcome = 'discarded' WHERE id = ?").bind(tracker_id),
+        db.prepare(
+            "UPDATE trackers SET last_outcome = ? WHERE id = ? "
+            "AND EXISTS (SELECT 1 FROM open_days WHERE tracker_id = ? AND date = ?)"
+        ).bind(outcome, tracker_id, tracker_id, date),
+        db.prepare("DELETE FROM open_days WHERE tracker_id = ? AND date = ?").bind(tracker_id, date),
     ]
 
 
@@ -215,29 +228,36 @@ async def rename_timer(db, tracker_id: int, timer_id: int, name: str) -> None:
     ).bind(name, tracker_id, timer_id).run()
 
 
-async def add_timer(db, tracker_id: int) -> None:
+_CURRENT_COUNT = "(SELECT COUNT(*) FROM timers c WHERE c.tracker_id = ? AND c.removed_on IS NULL)"
+
+
+async def add_timer(db, tracker_id: int, cap: int) -> None:
+    """Add a timer at zero to the open day, unless the tracker already holds ``cap``."""
     await db.batch([
         db.prepare(
             "INSERT INTO timers (tracker_id, position, name) "
-            "SELECT ?, COALESCE(MAX(position), 0) + 1, '' FROM timers WHERE tracker_id = ?"
-        ).bind(tracker_id, tracker_id),
+            f"SELECT ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM timers WHERE tracker_id = ?), '' WHERE {_CURRENT_COUNT} < ?"
+        ).bind(tracker_id, tracker_id, tracker_id, cap),
         db.prepare(
             "INSERT INTO open_day_timers (timer_id, tracker_id) "
-            "SELECT MAX(id), ? FROM timers WHERE tracker_id = ?"
+            "SELECT t.id, ? FROM timers t WHERE t.tracker_id = ? AND t.removed_on IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM open_day_timers o WHERE o.timer_id = t.id)"
         ).bind(tracker_id, tracker_id),
     ])
 
 
 async def remove_timer(db, tracker_id: int, timer_id: int, removed_on: str) -> None:
     """Drop the timer and its time today. One with saved days stays, marked removed, so its
-    graph stays on the Charts page; one without is deleted."""
+    graph stays on the Charts page; one without is deleted. The last timer always stays."""
     await db.batch([
-        db.prepare("DELETE FROM open_day_timers WHERE tracker_id = ? AND timer_id = ?").bind(tracker_id, timer_id),
+        db.prepare(
+            f"DELETE FROM open_day_timers WHERE tracker_id = ? AND timer_id = ? AND {_CURRENT_COUNT} > 1"
+        ).bind(tracker_id, timer_id, tracker_id),
         db.prepare(
             "UPDATE timers SET removed_on = ? WHERE tracker_id = ? AND id = ? "
-            "AND EXISTS (SELECT 1 FROM history_values v WHERE v.timer_id = timers.id)"
-        ).bind(removed_on, tracker_id, timer_id),
+            f"AND EXISTS (SELECT 1 FROM history_values v WHERE v.timer_id = timers.id) AND {_CURRENT_COUNT} > 1"
+        ).bind(removed_on, tracker_id, timer_id, tracker_id),
         db.prepare(
-            "DELETE FROM timers WHERE tracker_id = ? AND id = ? AND removed_on IS NULL"
-        ).bind(tracker_id, timer_id),
+            f"DELETE FROM timers WHERE tracker_id = ? AND id = ? AND removed_on IS NULL AND {_CURRENT_COUNT} > 1"
+        ).bind(tracker_id, timer_id, tracker_id),
     ])

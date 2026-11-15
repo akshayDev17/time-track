@@ -18,6 +18,7 @@ export type Load = { tracker: Tracker | null; missing: boolean; expired: boolean
 export function useTracker(slug: string | null) {
   const [state, setState] = useState<Load>({ tracker: null, missing: false, expired: false, error: null });
   const busy = useRef(0);
+  const changes = useRef(0);
   const channel = useRef<BroadcastChannel | null>(null);
 
   const fail = useCallback((e: unknown) => {
@@ -28,14 +29,16 @@ export function useTracker(slug: string | null) {
 
   const load = useCallback(() => {
     if (!slug || busy.current) return;
+    const sent = changes.current;
     getTracker(slug).then((r) => {
-      if (!busy.current) setState((s) => ({ ...s, tracker: r.tracker, missing: false }));
+      if (!busy.current && changes.current === sent) setState((s) => ({ ...s, tracker: r.tracker, missing: false }));
     }, fail);
   }, [slug, fail]);
 
   const run = useCallback(
     async (call: () => Promise<TrackerResponse>): Promise<ApiError | null> => {
       busy.current += 1;
+      changes.current += 1;
       try {
         const r = await call();
         setState((s) => ({ ...s, tracker: r.tracker, error: null }));

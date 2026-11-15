@@ -107,9 +107,16 @@ async def get_history(db, user_id: int, slug: str, now_ms: int) -> dict:
 async def create_tracker(db, user_id: int, body: dict, now_ms: int) -> dict:
     name = rules.tracker_name(body.get("name"))
     count = rules.timer_count(body.get("timers"))
-    slug = rules.unique_slug(name, await store.taken_slugs(db, user_id))
-    await store.create_tracker(db, user_id, slug, name, count, now_ms)
-    return await get_tracker(db, user_id, slug, now_ms)
+    for _ in range(2):
+        slug = rules.unique_slug(name, await store.taken_slugs(db, user_id))
+        try:
+            await store.create_tracker(db, user_id, slug, name, count, now_ms)
+        except Exception as error:
+            if not store.is_unique_violation(error):
+                raise
+            continue
+        return await get_tracker(db, user_id, slug, now_ms)
+    raise Conflict("Another tracker took that name just now. Try again.", "slug_taken")
 
 
 async def delete_tracker(db, user_id: int, slug: str) -> None:
@@ -144,14 +151,19 @@ async def start_today(db, user_id: int, slug: str, body: dict, now_ms: int) -> d
             running = _any_running(state)
             if running:
                 raise Conflict(f"Stop all timers first: {running} still running on that day.", "timers_running")
-            statements += store.save_day_statements(db, tracker["id"], now_ms)
+            statements += store.save_day_statements(db, tracker["id"], day["date"], now_ms)
         else:
-            statements += store.discard_day_statements(db, tracker["id"])
+            statements += store.discard_day_statements(db, tracker["id"], day["date"])
     elif choice is not None:
         raise Invalid("There is no unsaved last day.")
     if await store.has_saved_date(db, tracker["id"], stamp["date"]):
         raise Conflict(f"{ONE_DAY_PER_DATE} {stamp['date']} is already saved.", "date_taken")
-    await db.batch(statements + store.start_day_statements(db, tracker["id"], stamp, now_ms))
+    try:
+        await db.batch(statements + store.start_day_statements(db, tracker["id"], stamp, now_ms))
+    except Exception as error:
+        if store.is_unique_violation(error):
+            raise Conflict(ONE_DAY_PER_DATE, "day_open") from error
+        raise
     return await get_tracker(db, user_id, slug, now_ms)
 
 
@@ -172,15 +184,15 @@ async def save_day(db, user_id: int, slug: str, now_ms: int) -> dict:
     running = _any_running(state)
     if running:
         raise Conflict(f"Stop all timers first: {running} still running.", "timers_running")
-    await db.batch(store.save_day_statements(db, tracker["id"], now_ms))
+    await db.batch(store.save_day_statements(db, tracker["id"], state["tracker"]["open_day"]["date"], now_ms))
     return await get_tracker(db, user_id, slug, now_ms)
 
 
 async def discard_day(db, user_id: int, slug: str, now_ms: int) -> dict:
     """Discard last day: deleted for good, never in History or on the Charts page."""
     tracker = await _tracker(db, user_id, slug)
-    await _ended_day(db, tracker, now_ms, "discard")
-    await db.batch(store.discard_day_statements(db, tracker["id"]))
+    state = await _ended_day(db, tracker, now_ms, "discard")
+    await db.batch(store.discard_day_statements(db, tracker["id"], state["tracker"]["open_day"]["date"]))
     return await get_tracker(db, user_id, slug, now_ms)
 
 
@@ -246,7 +258,7 @@ async def add_timer(db, user_id: int, slug: str, now_ms: int) -> dict:
     tracker, state = await _live(db, user_id, slug, now_ms)
     if len(state["tracker"]["timers"]) >= rules.MAX_TIMERS:
         raise Conflict(f"{rules.MAX_TIMERS} of {rules.MAX_TIMERS}: the most a tracker holds.", "timer_cap")
-    await store.add_timer(db, tracker["id"])
+    await store.add_timer(db, tracker["id"], rules.MAX_TIMERS)
     return await get_tracker(db, user_id, slug, now_ms)
 
 
