@@ -1,0 +1,41 @@
+{
+	"$schema": "../frontend/node_modules/wrangler/config-schema.json",
+	"name": "time-track-backend",
+	"main": "entry.py",
+	// Python Workers require this flag:
+	// https://developers.cloudflare.com/workers/languages/python/
+	"compatibility_flags": [
+		"python_workers"
+	],
+	"compatibility_date": "2026-10-10",
+	// Reachable only through the site's own path, never workers.dev.
+	"workers_dev": false,
+	"routes": [
+		// The API only. More specific than the frontend's time-track/*, so it wins.
+		{
+			"pattern": "akshayprabhakant.com/time-track/api/*",
+			"zone_name": "akshayprabhakant.com"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "time-track",
+			// Created with `wrangler d1 create time-track` (docs/deploy.md §B). Not a
+			// secret; the deploy job refuses to run while this holds a placeholder.
+			"database_id": "aee403ba-5fb8-4e70-b0b7-7b93961809ee",
+			"migrations_dir": "migrations"
+		}
+	],
+	// Lets `wrangler dev` simulate an authenticated Access identity, so the
+	// ctx.access path can be exercised locally without a login flow.
+	// https://developers.cloudflare.com/workers/configuration/cloudflare-access/
+	"access": {
+		"dev": {
+			"aud": "time-track",
+			"identity": {
+				"email": "you@example.com"
+			}
+		}
+	}
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "time-track-frontend",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-10",
+
+  // Time Track's own paths only. The root stays the personal site, /time-track/api/*
+  // is the Python Worker (a more specific route), and no site-wide path such as /api/*,
+  // /_next/* or /vendors/* is claimed: basePath keeps every chunk under /time-track/_next/.
+  "workers_dev": false,
+  "routes": [
+    // The bare path needs its own entry: `time-track/*` matches everything under
+    // /time-track/ but not /time-track itself.
+    { "pattern": "akshayprabhakant.com/time-track", "zone_name": "akshayprabhakant.com" },
+    { "pattern": "akshayprabhakant.com/time-track/*", "zone_name": "akshayprabhakant.com" }
+  ],
+
+  // The Next.js static export (`npm run build`). `run_worker_first` so the prefix is
+  // stripped, and tracker URLs mapped to their page, before the assets lookup.
+  "assets": {
+    "directory": "./out",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+
+  // The shared site parts (theme and site row): every HTML page goes through site-shell's
+  // compose() (akshayDev17/site-themes, shell/). worker.js fails open: with site-shell down,
+  // the page is served exactly as built.
+  "services": [{ "binding": "SHELL", "service": "site-shell" }]
+}
