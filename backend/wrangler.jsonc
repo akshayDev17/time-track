@@ -21,9 +21,9 @@
 		{
 			"binding": "DB",
 			"database_name": "time-track",
-			// Placeholder until the owner runs `wrangler d1 create time-track`
-			// (docs/deploy.md §B). The deploy job refuses to run while it is here.
-			"database_id": "REPLACE_AFTER_d1_create",
+			// Created with `wrangler d1 create time-track` (docs/deploy.md §B). Not a
+			// secret; the deploy job refuses to run while this holds a placeholder.
+			"database_id": "aee403ba-5fb8-4e70-b0b7-7b93961809ee",
 			"migrations_dir": "migrations"
 		}
 	],

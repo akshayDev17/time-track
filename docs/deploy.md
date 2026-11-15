@@ -1,7 +1,14 @@
 # Deploying Time Track
 
-A checklist, in order. Both deploy jobs refuse to run until §A is applied, so nothing under
+A checklist, in order. Both deploy jobs refuse to run unless §A is in place, so nothing under
 `/time-track` is ever exposed without its sign-in.
+
+**Status (2026-11-15): §A, §B and §C are done.** With the owner's approval they were applied
+with `portfolio-app`: the Access apps `time-track (/time-track)` (Allow on `time-track/*`) and
+`time-track (public)` (Bypass on exactly `time-track` and `time-track/_next/*`), the D1
+database `time-track` (its id is committed in `backend/wrangler.jsonc`), and the GitHub
+`production` environment with its two secrets. The steps below stay as the reference for
+what each one is and how to redo it.
 
 ```
 akshayprabhakant.com/time-track/api/*         → backend Worker  (Python + D1)    backend/wrangler.jsonc
@@ -16,14 +23,14 @@ Cost: Workers Free and D1's free tier. No Durable Objects or other paid feature.
 tracker page asks the API every 3 s (only while the tab is visible), so one tab left open and
 visible all day is about 29,000 requests, against the free plan's 100,000 a day.
 
-## A. Cloudflare Access (the owner applies this; the build changes nothing)
+## A. Cloudflare Access (done; the repo itself never changes Access)
 
 The public page must stay reachable signed out, while every signed-in surface (the trackers
 pages and the API) sits behind the same allowed-email list as the other apps. One Access app
 over the whole prefix (what `portfolio-app bootstrap` makes) would hide the public page, so
 the split is two applications. Cloudflare One → Access → Applications:
 
-1. **`Time Track`** — Add an application → Self-hosted.
+1. **`time-track (/time-track)`** — Add an application → Self-hosted.
    - Destination: domain `akshayprabhakant.com`, path `time-track/*`. Only this one: the bare
      `/time-track` goes to the public app below. `time-track/*` covers `/time-track/api/*`.
    - Session duration: 24 hours.
@@ -32,7 +39,7 @@ the split is two applications. Cloudflare One → Access → Applications:
      reusable policy that list lives in (`portfolio-app sign-in`), or Include → Emails with
      the same addresses as the Quiz Room's `Invited solvers`. Never Include "Login Methods:
      One-time PIN" alone: that lets any email in.
-2. **`Time Track (public)`** — Add an application → Self-hosted.
+2. **`time-track (public)`** — Add an application → Self-hosted.
    - Destinations, both with domain `akshayprabhakant.com`: path `time-track`, and path
      `time-track/_next/*`. Nothing else.
    - One policy, `Time Track public page`: Action **Bypass**, Include → **Everyone**.
@@ -58,7 +65,7 @@ How a request is decided: the public page is static and identical for everyone; 
 when Access redirects it to the login. The Worker reads identity from `ctx.access` only and
 answers 401 to every API route without it.
 
-## B. D1
+## B. D1 (done)
 
 ```sh
 cd frontend && npm ci && cd ../backend
@@ -69,7 +76,7 @@ Put the printed `database_id` into `backend/wrangler.jsonc` in place of
 `REPLACE_AFTER_d1_create` and commit it (it is not a secret). The deploy job applies
 `backend/migrations/` itself.
 
-## C. GitHub `production` environment
+## C. GitHub `production` environment (done)
 
 Settings → Environments → New environment `production`, with two environment secrets:
 
