@@ -210,8 +210,8 @@ function runs(points: (number | null)[]): [number, number][][] {
 
 /**
  * One graph: a line through each day's minutes with a circle on every drawn day (`null` draws
- * nothing and breaks the line), the dashed median, and its median card beside it. Hover, tap
- * or the arrow keys (the plot is focusable) show a day's date and value.
+ * nothing and breaks the line), the dashed median, and its median card beside it. Hover or a
+ * tap shows a day's date and value.
  */
 export function GraphRow({
   title, points, tips, median, medianNote, from, to, sub, removed, sample, total,
@@ -288,22 +288,10 @@ export function GraphRow({
           <div
             className="plot"
             ref={plot}
-            tabIndex={0}
-            role="group"
-            aria-roledescription="chart"
-            aria-label={`${title}, ${from} to ${to}. Use the arrow keys to read each day.`}
             onPointerMove={(e) => pick(e.clientX)}
             onPointerDown={(e) => pick(e.clientX)}
             onPointerLeave={(e) => {
               if (e.pointerType === 'mouse') setAt(null);
-            }}
-            onBlur={() => setAt(null)}
-            onKeyDown={(e) => {
-              if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-                e.preventDefault();
-                const d = e.key === 'ArrowRight' ? 1 : -1;
-                setAt((i) => Math.max(0, Math.min(n - 1, i === null ? (d > 0 ? 0 : n - 1) : i + d)));
-              } else if (e.key === 'Escape') setAt(null);
             }}
           >
             <svg width={width} height={PLOT_H} viewBox={`0 0 ${width} ${PLOT_H}`} aria-hidden="true">

@@ -266,6 +266,39 @@ test('every view and transition on the board', async () => {
   errors.splice(refusedLog, 1);
   await btn(page, 'Dismiss').click();
   assert.equal(await page.locator('.tc.run').count(), 1, 'only Deep work runs');
+  // Stop one timer, then start another at once while the stop's answer is slow: the start is
+  // sent after that answer, stamped with its own click time, so its time never jumps back
+  const shown = async (name) => {
+    const [h, m, s] = (await card(name).locator('.tc-disp').textContent()).split(':').map(Number);
+    return ((h * 60 + m) * 60 + s) * 1000;
+  };
+  let releaseSlow;
+  const slowStop = new Promise((r) => (releaseSlow = r));
+  await page.route(stopUrl, async (route) => {
+    await slowStop;
+    await route.continue();
+  });
+  const startSent = page.waitForRequest(startUrl);
+  await btn(page, 'Stop Deep work').click();
+  await btn(page, 'Start Meetings').click();
+  await btn(page, 'Stop Meetings').waitFor({ timeout: 300 });
+  await page.waitForTimeout(1500);
+  const beforeAnswers = await shown('Meetings');
+  releaseSlow();
+  const startRequest = await startSent;
+  const startAnswer = await (await startRequest.response()).json();
+  await page.unroute(stopUrl);
+  const meetingsId = Number(startRequest.url().match(/timers\/(\d+)\/start$/)[1]);
+  const pressedAt = startRequest.postDataJSON().pressed_at_ms;
+  assert.equal(startAnswer.tracker.timers.find((t) => t.id === meetingsId).running_since_ms, pressedAt, 'stamped at the click, not on arrival');
+  const afterAnswers = await shown('Meetings');
+  assert.ok(beforeAnswers >= 1400 && afterAnswers >= beforeAnswers, `Meetings never jumps back: ${beforeAnswers} ms, then ${afterAnswers} ms`);
+  await btn(page, 'Stop Meetings').click();
+  await btn(page, 'Clear Meetings').click();
+  await btn(page, 'Clear').click();
+  await btn(page, 'Start Meetings').waitFor();
+  await btn(page, 'Start Deep work').click();
+  assert.equal(await page.locator('.tc.run').count(), 1, 'only Deep work runs');
   await btn(page, '+ Add timer').click();
   await text(page, '9 of 15 timers');
   await look(page, 'v7-open-day');

@@ -15,9 +15,10 @@ const CHANNEL = 'time-track';
  * One tracker's server state, kept fresh: polled while the tab is visible, reloaded when it
  * comes back, and announced to this browser's other tabs (BroadcastChannel) after each change
  * so they follow at once. `run` sends one change and takes the server's answer as the state;
- * given the timer action it makes, the press shows at once, stamped with the server's clock
- * (lib/load.ts), and snaps back if the server refuses it. Changes go one at a time, in the
- * order pressed, so each answer holds every earlier press.
+ * `call` gets the press time on the server's clock, for the server to stamp the change with.
+ * Given the timer action it makes, the press shows at once at that time (lib/load.ts), and
+ * snaps back if the server refuses it. Changes go one at a time, in the order pressed, so
+ * each answer holds every earlier press.
  *
  * `slug` is undefined until the page has read its URL (nothing is known yet, nothing is
  * asked) and null when the URL names no tracker (missing, without asking).
@@ -41,14 +42,15 @@ export function useTracker(slug: string | null | undefined) {
 
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const run = useCallback(
-    (call: () => Promise<TrackerResponse>, action?: TimerAction): Promise<ApiError | null> => {
+    (call: (at: number) => Promise<TrackerResponse>, action?: TimerAction): Promise<ApiError | null> => {
       busy.current += 1;
       changes.current += 1;
       const id = changes.current;
-      if (action) setState((s) => pressed(s, { id, action, at: serverNow() }));
+      const at = serverNow();
+      if (action) setState((s) => pressed(s, { id, action, at }));
       const sent = queue.current.then(async () => {
         try {
-          const r = await call();
+          const r = await call(at);
           setState((s) => changed(s, id, r.tracker));
           channel.current?.postMessage({ slug });
           return null;

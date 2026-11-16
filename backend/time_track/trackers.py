@@ -234,11 +234,12 @@ _TIMER_WRITES = {"start": store.start_timer, "stop": store.stop_timer, "clear": 
 _TRACKER_WRITES = {"start-all": store.start_all, "stop-all": store.stop_all, "relaunch": store.relaunch, "clear-all": store.clear_all}
 
 
-async def timer_action(db, user_id: int, slug: str, timer_id: int, action: str, now_ms: int) -> dict:
+async def timer_action(db, user_id: int, slug: str, timer_id: int, action: str, body: dict, now_ms: int) -> dict:
     """Start, Stop or Clear one timer in one round trip: the write, guarded in SQL by the same
     rules checked here, runs in one batch with the reads of the state it leaves. A refused
-    write changed nothing, so the state read with it says why."""
-    write = _TIMER_WRITES[action](db, user_id, slug, timer_id, now_ms)
+    write changed nothing, so the state read with it says why. Stamped with the press time
+    (``rules.press_time``), so a press queued behind another one is not stamped late."""
+    write = _TIMER_WRITES[action](db, user_id, slug, timer_id, rules.press_time(body, now_ms), now_ms)
     state = tracker_state(await _read(db, user_id, slug, [write]), now_ms)
     _check_live(state, allow_ended=action == "stop")
     timer = _timer(state, timer_id)
@@ -247,9 +248,9 @@ async def timer_action(db, user_id: int, slug: str, timer_id: int, action: str, 
     return state
 
 
-async def tracker_action(db, user_id: int, slug: str, action: str, now_ms: int) -> dict:
+async def tracker_action(db, user_id: int, slug: str, action: str, body: dict, now_ms: int) -> dict:
     """Start all, Stop all, Relaunch or Clear all, in one round trip like ``timer_action``."""
-    write = _TRACKER_WRITES[action](db, user_id, slug, now_ms)
+    write = _TRACKER_WRITES[action](db, user_id, slug, rules.press_time(body, now_ms), now_ms)
     state = tracker_state(await _read(db, user_id, slug, [write]), now_ms)
     _check_live(state, allow_ended=action == "stop-all")
     if action == "clear-all" and _any_running(state):
@@ -266,7 +267,7 @@ async def rename_timer(db, user_id: int, slug: str, timer_id: int, body: dict, n
 
 async def add_timer(db, user_id: int, slug: str, now_ms: int) -> dict:
     tracker, state = await _live(db, user_id, slug, now_ms)
-    if len(state["tracker"]["timers"]) >= rules.MAX_TIMERS or not await store.add_timer(db, tracker["id"], rules.MAX_TIMERS):
+    if len(state["tracker"]["timers"]) >= rules.MAX_TIMERS or not await store.add_timer(db, tracker["id"], rules.MAX_TIMERS, now_ms):
         raise Conflict(TIMER_CAP, "timer_cap")
     return await get_tracker(db, user_id, slug, now_ms)
 

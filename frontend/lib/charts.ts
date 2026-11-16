@@ -27,8 +27,6 @@ export type Graph = {
   median: number | null;
   /** The saved days the median counts. */
   saved: number;
-  /** The date the timer was first saved, when that is after the axis starts (drawn as 0 before). */
-  addedOn: string | null;
 };
 
 export type Charts = { from: string; to: string; total: Graph; timers: Graph[] };
@@ -60,7 +58,6 @@ export function charts(history: HistoryResponse, range: Range): Charts | null {
     points: totalPoints,
     tips: axis.map((day, i) => tip(day, totalPoints[i] === null ? 'not saved' : dur(totalPoints[i]!))),
     ...counted(totalPoints),
-    addedOn: null,
   };
 
   const timers = history.timers.map((timer): Graph => {
@@ -95,7 +92,6 @@ export function charts(history: HistoryResponse, range: Range): Charts | null {
       points,
       tips,
       ...counted(mine),
-      addedOn: firstOwn > start && Number.isFinite(firstOwn) ? dateOf(firstOwn) : null,
     };
   });
 

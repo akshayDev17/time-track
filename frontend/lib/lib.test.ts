@@ -187,10 +187,6 @@ test('charts: a timer added later is drawn as 0 before it existed, and its media
   assert.equal(fifth.tips[0], 'Sun 1 Nov · 0 m · not added yet');
   assert.equal(fifth.median, 45);
   assert.equal(fifth.saved, 5);
-  assert.equal(fifth.addedOn, '2026-11-10');
-  assert.equal(c.timers[0].addedOn, null);
-  // within 30 days it still starts on the first saved day; a 7-day window starts after it was added
-  assert.equal(charts({ now_ms: NOW, name: 'Day', slug: 'day', timers, days: days.slice(7) }, 30)!.timers[4].addedOn, '2026-11-10');
 });
 
 test('charts: the Total graph leads with the sum of every saved value, median over saved days', () => {
@@ -315,6 +311,21 @@ test('load: a press shows at once from the server clock, and the answer replaces
   const afterStart = tracker({ timers: [{ id: 1, name: 'A', acc_ms: 5000, running_since_ms: 4300 }, afterStop.timers[1]] });
   s = changed(s, 2, afterStart);
   assert.deepEqual(s, { ...LOADING, tracker: afterStart, base: afterStart });
+});
+
+test('load: stop one timer then start another, the first answer slow: the start stays at its click time', () => {
+  const t = tracker({ timers: [{ id: 1, name: 'A', acc_ms: 0, running_since_ms: 1000 }, { id: 2, name: 'B', acc_ms: 0, running_since_ms: null }] });
+  let s = pressed(polled(LOADING, t), { id: 1, action: { kind: 'stop', id: 1 }, at: 61000 });
+  s = pressed(s, { id: 2, action: { kind: 'start', id: 2 }, at: 61100 });
+  const shown = (x: typeof s) => x.tracker!.timers.map((y) => [y.acc_ms, y.running_since_ms]);
+  assert.deepEqual(shown(s), [[60000, null], [0, 61100]]);
+  // 1.5 s later the stop's answer, stamped at its press: the start, still waiting, stays on top
+  s = changed(s, 1, tracker({ timers: [{ ...t.timers[0], acc_ms: 60000, running_since_ms: null }, t.timers[1]] }));
+  assert.deepEqual(shown(s), [[60000, null], [0, 61100]]);
+  // then the start's answer, stamped at its click: nothing moves
+  s = changed(s, 2, tracker({ timers: [{ ...t.timers[0], acc_ms: 60000, running_since_ms: null }, { ...t.timers[1], running_since_ms: 61100 }] }));
+  assert.deepEqual(shown(s), [[60000, null], [0, 61100]]);
+  assert.deepEqual(s.pending, []);
 });
 
 test('load: a refused press snaps back with the reason; a later press stays', () => {

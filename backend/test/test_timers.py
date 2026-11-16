@@ -215,10 +215,12 @@ def test_start_and_stop_are_two_round_trips_each_and_answer_the_state_they_wrote
     from time_track.api import handle
 
     c, slug, ids = live()
+    c.advance(MINUTE)
     db = Counting(c.db)
     for action in ("start", "stop"):
         db.trips = 0
-        status, body = asyncio.run(handle(db, "POST", f"{API}/trackers/{slug}/timers/{ids[1]}/{action}", None, OWNER, c.now, SITE, SITE))
+        press = {"pressed_at_ms": c.now - 200}
+        status, body = asyncio.run(handle(db, "POST", f"{API}/trackers/{slug}/timers/{ids[1]}/{action}", press, OWNER, c.now, SITE, SITE))
         # the user's id, then one batch: the guarded write and every read of the reply
         assert (status, db.trips) == (200, 2), (action, db.trips)
         assert body == c.ok("GET", f"/trackers/{slug}")
@@ -236,3 +238,80 @@ def test_a_refused_start_writes_nothing():
     assert (status, body["code"]) == (409, "day_ended")
     assert c.call("POST", f"/trackers/{slug}/start-all")[1]["code"] == "day_ended"
     assert all(t["running_since_ms"] is None for t in c.tracker(slug)["timers"])
+
+
+# ── press times: a press is stamped when it was pressed, within a short window ──
+
+def pressed(c, slug, path, ms):
+    return c.ok("POST", f"/trackers/{slug}/{path}", {"pressed_at_ms": ms})["tracker"]["timers"]
+
+
+def test_stop_one_then_start_another_is_stamped_at_each_press_not_when_it_arrives():
+    c, slug, ids = live(2)
+    c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
+    c.advance(MINUTE)
+    stop_press = c.now
+    c.advance(1_500)  # the stop's answer is slow; the start, pressed 100 ms after it, waited for it
+    pressed(c, slug, f"timers/{ids[0]}/stop", stop_press)
+    c.advance(1_500)
+    timers = pressed(c, slug, f"timers/{ids[1]}/start", stop_press + 100)
+    assert timers[0]["acc_ms"] == MINUTE
+    assert timers[1]["running_since_ms"] == stop_press + 100
+
+
+def test_a_press_time_inside_the_window_stamps_every_timer_action():
+    c, slug, ids = live(2)
+    c.advance(MINUTE)
+    since = c.now - 10_000
+    assert pressed(c, slug, "start-all", since)[0]["running_since_ms"] == since  # as old as allowed
+    c.advance(MINUTE)
+    assert pressed(c, slug, "stop-all", c.now - 4_000)[0]["acc_ms"] == MINUTE + 6_000
+    assert pressed(c, slug, "relaunch", c.now + 1_000)[1]["running_since_ms"] == c.now + 1_000  # within the skew
+    c.advance(MINUTE)
+    assert pressed(c, slug, f"timers/{ids[1]}/stop", c.now - 1_000)[1]["acc_ms"] == MINUTE + 6_000 + MINUTE - 2_000
+    assert pressed(c, slug, f"timers/{ids[1]}/start", c.now - 500)[1]["running_since_ms"] == c.now - 500
+
+
+def test_a_press_time_ahead_beyond_the_skew_or_older_than_ten_seconds_uses_the_server_clock():
+    c, slug, ids = live(2)
+    assert pressed(c, slug, f"timers/{ids[0]}/start", c.now + 1_001)[0]["running_since_ms"] == c.now
+    c.advance(MINUTE)
+    assert pressed(c, slug, f"timers/{ids[0]}/stop", c.now - 10_001)[0]["acc_ms"] == MINUTE
+    for junk in ("123", True, 1.5, None):
+        c.ok("POST", f"/trackers/{slug}/timers/{ids[1]}/start", {"pressed_at_ms": junk})
+        assert c.tracker(slug)["timers"][1]["running_since_ms"] == c.now
+        c.ok("POST", f"/trackers/{slug}/timers/{ids[1]}/stop")
+        c.advance(MINUTE)
+
+
+def test_a_press_time_earlier_than_the_timers_last_change_uses_the_server_clock():
+    c, slug, ids = live(2)
+    c.advance(MINUTE)
+    started = c.now
+    c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
+    c.advance(5_000)
+    # a stop never before the run began
+    assert pressed(c, slug, f"timers/{ids[0]}/stop", started - 1)[0]["acc_ms"] == 5_000
+    stopped = c.now
+    c.advance(5_000)
+    # a start never before the last stop, so no time is counted twice
+    assert pressed(c, slug, f"timers/{ids[0]}/start", stopped - 1)[0]["running_since_ms"] == c.now
+    # nor before the day began, nor before a Clear
+    assert pressed(c, slug, f"timers/{ids[1]}/start", c.now - MINUTE - 1)[1]["running_since_ms"] == c.now
+    c.ok("POST", f"/trackers/{slug}/stop-all")
+    c.advance(5_000)
+    cleared = c.now
+    c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/clear")
+    c.advance(1_000)
+    assert pressed(c, slug, f"timers/{ids[0]}/start", cleared - 1)[0]["running_since_ms"] == c.now
+    # each timer is judged by its own last change: a press is used on one and not another
+    c.advance(1_000)
+    c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/stop")
+    c.advance(1_000)
+    c.ok("POST", f"/trackers/{slug}/timers/{ids[1]}/start")
+    second_start = c.now
+    c.advance(1_000)
+    c.ok("POST", f"/trackers/{slug}/stop-all")  # stops only ids[1]
+    c.advance(2_000)
+    timers = pressed(c, slug, "relaunch", second_start + 500)
+    assert [t["running_since_ms"] for t in timers] == [second_start + 500, c.now]

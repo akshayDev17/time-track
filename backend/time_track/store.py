@@ -189,8 +189,9 @@ def start_day_statements(db, tracker_id: int, stamp: dict, now_ms: int) -> list:
                VALUES (?, ?, ?, ?, ?, ?, ?)"""
         ).bind(tracker_id, stamp["date"], stamp["tz"], stamp["tz_label"], stamp["day_start_ms"], stamp["day_end_ms"], now_ms),
         db.prepare(
-            "INSERT INTO open_day_timers (timer_id, tracker_id) SELECT id, ? FROM timers WHERE tracker_id = ? AND removed_on IS NULL"
-        ).bind(tracker_id, tracker_id),
+            "INSERT INTO open_day_timers (timer_id, tracker_id, changed_at_ms) "
+            "SELECT id, ?, ? FROM timers WHERE tracker_id = ? AND removed_on IS NULL"
+        ).bind(tracker_id, now_ms, tracker_id),
         db.prepare("UPDATE trackers SET last_outcome = NULL WHERE id = ?").bind(tracker_id),
     ]
 
@@ -199,60 +200,70 @@ def start_day_statements(db, tracker_id: int, stamp: dict, now_ms: int) -> list:
 #
 # Each is scoped by (user, slug) and guarded in SQL, so it changes nothing unless the rule
 # holds at the moment it runs: a timer starts only while its day is live (the date has not
-# ended where it began), and Stop works on any open day. Stamped with the server's clock.
+# ended where it began), and Stop works on any open day. Each is stamped with ``at``, the
+# press time (``rules.press_time``), on every timer whose last change (``changed_at_ms``)
+# is not later than it, and with the server's clock on any other.
 
 _LIVE_DAY = "EXISTS (SELECT 1 FROM open_days d WHERE d.tracker_id = open_day_timers.tracker_id AND ? < d.day_end_ms)"
-_STOP = "acc_ms = acc_ms + MAX(0, ? - running_since_ms), running_since_ms = NULL"
+_AT = "(CASE WHEN changed_at_ms <= ? THEN ? ELSE ? END)"
+_START = f"running_since_ms = {_AT}, changed_at_ms = {_AT}"
+_STOP = f"acc_ms = acc_ms + MAX(0, {_AT} - running_since_ms), running_since_ms = NULL, changed_at_ms = {_AT}"
+_CLEAR = f"acc_ms = 0, changed_at_ms = {_AT}"
 
 
-def start_timer(db, user_id: int, slug: str, timer_id: int, now_ms: int):
+def _at(at: int, now_ms: int) -> tuple:
+    """The bindings of one ``_AT``."""
+    return (at, at, now_ms)
+
+
+def start_timer(db, user_id: int, slug: str, timer_id: int, at: int, now_ms: int):
     return db.prepare(
-        f"UPDATE open_day_timers SET running_since_ms = ? WHERE tracker_id = {_ID} AND timer_id = ? "
+        f"UPDATE open_day_timers SET {_START} WHERE tracker_id = {_ID} AND timer_id = ? "
         f"AND running_since_ms IS NULL AND {_LIVE_DAY}"
-    ).bind(now_ms, user_id, slug, timer_id, now_ms)
+    ).bind(*_at(at, now_ms), *_at(at, now_ms), user_id, slug, timer_id, now_ms)
 
 
-def stop_timer(db, user_id: int, slug: str, timer_id: int, now_ms: int):
+def stop_timer(db, user_id: int, slug: str, timer_id: int, at: int, now_ms: int):
     return db.prepare(
         f"UPDATE open_day_timers SET {_STOP} WHERE tracker_id = {_ID} AND timer_id = ? AND running_since_ms IS NOT NULL"
-    ).bind(now_ms, user_id, slug, timer_id)
+    ).bind(*_at(at, now_ms), *_at(at, now_ms), user_id, slug, timer_id)
 
 
-def clear_timer(db, user_id: int, slug: str, timer_id: int, now_ms: int):
+def clear_timer(db, user_id: int, slug: str, timer_id: int, at: int, now_ms: int):
     return db.prepare(
-        f"UPDATE open_day_timers SET acc_ms = 0 WHERE tracker_id = {_ID} AND timer_id = ? "
+        f"UPDATE open_day_timers SET {_CLEAR} WHERE tracker_id = {_ID} AND timer_id = ? "
         f"AND running_since_ms IS NULL AND {_LIVE_DAY}"
-    ).bind(user_id, slug, timer_id, now_ms)
+    ).bind(*_at(at, now_ms), user_id, slug, timer_id, now_ms)
 
 
-def start_all(db, user_id: int, slug: str, now_ms: int):
+def start_all(db, user_id: int, slug: str, at: int, now_ms: int):
     """Start every timer at zero; one with time is left as it is."""
     return db.prepare(
-        f"UPDATE open_day_timers SET running_since_ms = ? WHERE tracker_id = {_ID} "
+        f"UPDATE open_day_timers SET {_START} WHERE tracker_id = {_ID} "
         f"AND running_since_ms IS NULL AND acc_ms = 0 AND {_LIVE_DAY}"
-    ).bind(now_ms, user_id, slug, now_ms)
+    ).bind(*_at(at, now_ms), *_at(at, now_ms), user_id, slug, now_ms)
 
 
-def stop_all(db, user_id: int, slug: str, now_ms: int):
+def stop_all(db, user_id: int, slug: str, at: int, now_ms: int):
     return db.prepare(
         f"UPDATE open_day_timers SET {_STOP} WHERE tracker_id = {_ID} AND running_since_ms IS NOT NULL"
-    ).bind(now_ms, user_id, slug)
+    ).bind(*_at(at, now_ms), *_at(at, now_ms), user_id, slug)
 
 
-def relaunch(db, user_id: int, slug: str, now_ms: int):
+def relaunch(db, user_id: int, slug: str, at: int, now_ms: int):
     """Resume every stopped timer that has time; none is reset."""
     return db.prepare(
-        f"UPDATE open_day_timers SET running_since_ms = ? WHERE tracker_id = {_ID} "
+        f"UPDATE open_day_timers SET {_START} WHERE tracker_id = {_ID} "
         f"AND running_since_ms IS NULL AND acc_ms > 0 AND {_LIVE_DAY}"
-    ).bind(now_ms, user_id, slug, now_ms)
+    ).bind(*_at(at, now_ms), *_at(at, now_ms), user_id, slug, now_ms)
 
 
-def clear_all(db, user_id: int, slug: str, now_ms: int):
+def clear_all(db, user_id: int, slug: str, at: int, now_ms: int):
     """Zero every timer, only while none of them runs."""
     return db.prepare(
-        f"UPDATE open_day_timers SET acc_ms = 0 WHERE tracker_id = {_ID} AND {_LIVE_DAY} AND NOT EXISTS "
+        f"UPDATE open_day_timers SET {_CLEAR} WHERE tracker_id = {_ID} AND {_LIVE_DAY} AND NOT EXISTS "
         "(SELECT 1 FROM open_day_timers r WHERE r.tracker_id = open_day_timers.tracker_id AND r.running_since_ms IS NOT NULL)"
-    ).bind(user_id, slug, now_ms)
+    ).bind(*_at(at, now_ms), user_id, slug, now_ms)
 
 
 async def rename_timer(db, tracker_id: int, timer_id: int, name: str) -> None:
@@ -264,7 +275,7 @@ async def rename_timer(db, tracker_id: int, timer_id: int, name: str) -> None:
 _CURRENT_COUNT = "(SELECT COUNT(*) FROM timers c WHERE c.tracker_id = ? AND c.removed_on IS NULL)"
 
 
-async def add_timer(db, tracker_id: int, cap: int) -> bool:
+async def add_timer(db, tracker_id: int, cap: int, now_ms: int) -> bool:
     """Add a timer at zero to the open day. False, with nothing written, when the tracker
     already holds ``cap``: the new timer gets no position and the batch fails."""
     try:
@@ -274,10 +285,10 @@ async def add_timer(db, tracker_id: int, cap: int) -> bool:
                 f"{_CURRENT_COUNT} < ? THEN (SELECT COALESCE(MAX(position), 0) + 1 FROM timers WHERE tracker_id = ?) END, '')"
             ).bind(tracker_id, tracker_id, cap, tracker_id),
             db.prepare(
-                "INSERT INTO open_day_timers (timer_id, tracker_id) "
-                "SELECT t.id, ? FROM timers t WHERE t.tracker_id = ? AND t.removed_on IS NULL "
+                "INSERT INTO open_day_timers (timer_id, tracker_id, changed_at_ms) "
+                "SELECT t.id, ?, ? FROM timers t WHERE t.tracker_id = ? AND t.removed_on IS NULL "
                 "AND NOT EXISTS (SELECT 1 FROM open_day_timers o WHERE o.timer_id = t.id)"
-            ).bind(tracker_id, tracker_id),
+            ).bind(tracker_id, now_ms, tracker_id),
         ])
     except Exception as error:
         if "NOT NULL constraint failed: timers.position" in str(error):

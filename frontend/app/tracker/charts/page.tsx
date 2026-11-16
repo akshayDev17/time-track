@@ -77,13 +77,7 @@ export default function ChartsPage() {
                 to={data.to}
                 total={g.timer === null}
                 removed={g.timer?.removed_on != null}
-                sub={
-                  g.timer?.removed_on
-                    ? `Removed ${dateLabel(g.timer.removed_on)}. Its saved days stay.`
-                    : g.addedOn
-                      ? `Added ${dateLabel(g.addedOn)}: drawn as 0 before then; its median counts only the days since.`
-                      : undefined
-                }
+                sub={g.timer?.removed_on ? `Removed ${dateLabel(g.timer.removed_on)}. Its saved days stay.` : undefined}
               />
             ))
           ) : (

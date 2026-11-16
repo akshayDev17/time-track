@@ -64,14 +64,14 @@ ROUTES = [
     ("POST", rf"/trackers/{SLUG}/save-day", lambda db, u, m, b, n: T.save_day(db, u, m["slug"], n)),
     ("POST", rf"/trackers/{SLUG}/discard-day", lambda db, u, m, b, n: T.discard_day(db, u, m["slug"], n)),
     ("POST", rf"/trackers/{SLUG}/(?P<action>start-all|stop-all|relaunch|clear-all)",
-     lambda db, u, m, b, n: T.tracker_action(db, u, m["slug"], m["action"], n)),
+     lambda db, u, m, b, n: T.tracker_action(db, u, m["slug"], m["action"], _object(b), n)),
     ("POST", rf"/trackers/{SLUG}/timers", lambda db, u, m, b, n: T.add_timer(db, u, m["slug"], n)),
     ("PATCH", rf"/trackers/{SLUG}/timers/{TIMER}",
      lambda db, u, m, b, n: T.rename_timer(db, u, m["slug"], int(m["timer"]), _object(b), n)),
     ("DELETE", rf"/trackers/{SLUG}/timers/{TIMER}",
      lambda db, u, m, b, n: T.remove_timer(db, u, m["slug"], int(m["timer"]), n)),
     ("POST", rf"/trackers/{SLUG}/timers/{TIMER}/(?P<action>start|stop|clear)",
-     lambda db, u, m, b, n: T.timer_action(db, u, m["slug"], int(m["timer"]), m["action"], n)),
+     lambda db, u, m, b, n: T.timer_action(db, u, m["slug"], int(m["timer"]), m["action"], _object(b), n)),
 ]
 COMPILED = [(method, re.compile(pattern + r"/?"), handler) for method, pattern, handler in ROUTES]
 

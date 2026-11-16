@@ -107,8 +107,8 @@ export default function TrackerPage() {
   const onConfirm = () => {
     const c = confirm!;
     setConfirm(null);
-    if (c.kind === 'clear') void run(() => api.timerAction(s, c.id, 'clear'));
-    else if (c.kind === 'clear-all') void run(() => api.trackerAction(s, 'clear-all'));
+    if (c.kind === 'clear') void run((at) => api.timerAction(s, c.id, 'clear', at));
+    else if (c.kind === 'clear-all') void run((at) => api.trackerAction(s, 'clear-all', at));
     else if (c.kind === 'remove') void run(() => api.removeTimer(s, c.id));
     else if (c.after === 'start') void startToday('discard');
     else void run(() => api.discardDay(s));
@@ -162,7 +162,7 @@ export default function TrackerPage() {
       <ControlBar
         timers={ts}
         mode={mode}
-        onAction={(a) => (a === 'clear-all' ? setConfirm({ kind: 'clear-all' }) : void run(() => api.trackerAction(s, a), { kind: a }))}
+        onAction={(a) => (a === 'clear-all' ? setConfirm({ kind: 'clear-all' }) : void run((at) => api.trackerAction(s, a, at), { kind: a }))}
         extra={<span className="count">{ts.length} of 15 timers</span>}
       />
       <div className="tgrid">
@@ -173,8 +173,8 @@ export default function TrackerPage() {
             timer={t}
             mode={mode}
             clock={serverNow}
-            onStart={() => void run(() => api.timerAction(s, t.id, 'start'), { kind: 'start', id: t.id })}
-            onStop={() => void run(() => api.timerAction(s, t.id, 'stop'), { kind: 'stop', id: t.id })}
+            onStart={() => void run((at) => api.timerAction(s, t.id, 'start', at), { kind: 'start', id: t.id })}
+            onStop={() => void run((at) => api.timerAction(s, t.id, 'stop', at), { kind: 'stop', id: t.id })}
             onClear={() => setConfirm({ kind: 'clear', id: t.id })}
           />
         ))}
