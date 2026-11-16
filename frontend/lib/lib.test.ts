@@ -361,4 +361,7 @@ test('server clock offset keeps the sample with the shortest round trip', () => 
   // this device's clock jumped an hour: the new offset wins at once, round trip or not
   const jumped = sampleOf(40_000 + 3_600_000, 4_000, 4_900);
   assert.deepEqual(better(a, jumped), jumped);
+  // an odd sent + received sum still gives whole milliseconds: the server takes only an
+  // integer pressed_at_ms, so a .5 offset would make every press stamped on arrival
+  assert.ok(Number.isInteger(sampleOf(10_000, 1_000, 1_201).offset));
 });

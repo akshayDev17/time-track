@@ -107,6 +107,8 @@ async function look(page, view) {
     await page.setViewportSize({ width: v.width, height: v.height });
     for (const scheme of ['light', 'dark']) {
       await page.emulateMedia({ colorScheme: scheme });
+      const want = `classic-${scheme}`;
+      await page.waitForFunction((t) => document.documentElement.dataset.theme === t, want, { timeout: 3000 }).catch(() => {});
       await page.waitForTimeout(150);
       const theme = await page.evaluate(() => document.documentElement.dataset.theme);
       assert.equal(theme, `classic-${scheme}`, `${view}: site-shell's theme follows the system`);
@@ -297,7 +299,7 @@ test('every view and transition on the board', async () => {
   await btn(page, 'Clear Meetings').click();
   await btn(page, 'Clear').click();
   await btn(page, 'Start Meetings').waitFor();
-  await btn(page, 'Start Deep work').click();
+  await btn(page, 'Resume Deep work').click();
   assert.equal(await page.locator('.tc.run').count(), 1, 'only Deep work runs');
   await btn(page, '+ Add timer').click();
   await text(page, '9 of 15 timers');
