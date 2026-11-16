@@ -184,7 +184,7 @@ test('charts: a timer added later is drawn as 0 before it existed, and its media
   const fifth = c.timers[4];
   assert.equal(c.from, 'Sun 1 Nov');
   assert.deepEqual(fifth.points, [0, 0, 0, 0, 0, 0, 0, 0, 0, 45, 45, 45, 45, 45]);
-  assert.equal(fifth.tips[0], 'Sun 1 Nov · 0 m · not added yet');
+  assert.equal(fifth.tips[0], 'Sun 1 Nov · 0 m');
   assert.equal(fifth.median, 45);
   assert.equal(fifth.saved, 5);
 });

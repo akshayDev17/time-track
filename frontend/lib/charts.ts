@@ -77,7 +77,7 @@ export function charts(history: HistoryResponse, range: Range): Charts | null {
       } else if (day < firstOwn) {
         points.push(0);
         mine.push(null);
-        tips.push(tip(day, '0 m · not added yet'));
+        tips.push(tip(day, dur(0)));
       } else {
         const minutes = (values[id] ?? 0) / 60000;
         points.push(minutes);
