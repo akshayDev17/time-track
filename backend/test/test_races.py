@@ -1,6 +1,7 @@
 """Two devices on one tracker at once: both pass the checks, then the other one writes first.
 
-``Racing`` runs the other device's requests just before this request's first write batch,
+``Racing`` runs the other device's requests just before this request's first batch that
+writes (batches of reads only pass straight through),
 which is the worst interleaving the Worker allows. The tracker stays as the winner left
 it. A loser that would break a rule gets the same answer the checks give one request
 later; a Save or Discard last day that lost its day does nothing and answers with the
@@ -14,8 +15,12 @@ from helpers import API, MINUTE, OWNER, PUNE, SITE, Client, at, stamp
 from time_track.api import handle
 
 
+def _writes(statements) -> bool:
+    return any(not s._sql.lstrip().upper().startswith("SELECT") for s in statements)
+
+
 class Racing:
-    """A database whose first ``batch`` lets ``other`` requests land first."""
+    """A database whose first ``batch`` that writes lets ``other`` requests land first."""
 
     def __init__(self, db, now_ms: int, other: list[tuple[str, str, dict | None]]):
         self._db = db
@@ -26,6 +31,8 @@ class Racing:
         return self._db.prepare(sql)
 
     async def batch(self, statements):
+        if not _writes(statements):
+            return await self._db.batch(statements)
         other, self._other = self._other, []
         for method, path, body in other:
             status, payload = await handle(self._db, method, API + path, body, OWNER, self._now, SITE, SITE)

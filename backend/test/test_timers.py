@@ -167,3 +167,72 @@ def test_add_rename_and_timer_actions_404_for_an_unknown_timer():
     c, slug, ids = live()
     assert c.call("POST", f"/trackers/{slug}/timers/999999/start")[0] == 404
     assert c.call("PATCH", f"/trackers/{slug}/timers/999999", {"name": "x"})[0] == 404
+
+
+class Counting:
+    """A database that counts round trips: each awaited statement, and each whole batch."""
+
+    def __init__(self, db):
+        self._db = db
+        self.trips = 0
+
+    def prepare(self, sql: str):
+        counter = self
+        statement = self._db.prepare(sql)
+
+        class Counted:
+            _sql = sql
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def bind(self, *params):
+                return Counted(self._inner.bind(*params))
+
+            async def first(self):
+                counter.trips += 1
+                return await self._inner.first()
+
+            async def all(self):
+                counter.trips += 1
+                return await self._inner.all()
+
+            async def run(self):
+                counter.trips += 1
+                return await self._inner.run()
+
+        return Counted(statement)
+
+    async def batch(self, statements):
+        self.trips += 1
+        return await self._db.batch([s._inner for s in statements])
+
+
+def test_start_and_stop_are_two_round_trips_each_and_answer_the_state_they_wrote():
+    import asyncio
+
+    from helpers import API, OWNER, SITE
+    from time_track.api import handle
+
+    c, slug, ids = live()
+    db = Counting(c.db)
+    for action in ("start", "stop"):
+        db.trips = 0
+        status, body = asyncio.run(handle(db, "POST", f"{API}/trackers/{slug}/timers/{ids[1]}/{action}", None, OWNER, c.now, SITE, SITE))
+        # the user's id, then one batch: the guarded write and every read of the reply
+        assert (status, db.trips) == (200, 2), (action, db.trips)
+        assert body == c.ok("GET", f"/trackers/{slug}")
+        c.advance(MINUTE)
+    assert times(c, slug)[1] == MINUTE
+
+
+def test_a_refused_start_writes_nothing():
+    c = Client(now_ms=at(PUNE, "2026-11-15T23:59"))
+    slug = c.new_tracker("Workday", 2)
+    c.start_today(slug)
+    ids = c.timer_ids(slug)
+    c.advance(2 * MINUTE)  # the date has ended where the day began
+    status, body = c.call("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
+    assert (status, body["code"]) == (409, "day_ended")
+    assert c.call("POST", f"/trackers/{slug}/start-all")[1]["code"] == "day_ended"
+    assert all(t["running_since_ms"] is None for t in c.tracker(slug)["timers"])

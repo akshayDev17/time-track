@@ -108,6 +108,11 @@ a { color: inherit; }
 .tc.run .tc-disp { color: var(--ok); }
 .tc.run .tc-disp .dim { color: color-mix(in oklab, var(--ok) 50%, transparent); }
 .tc.run .tc-no { background: var(--ok); color: var(--on-solid); }
+.tc.press { cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; transition: border-color .15s var(--ease), box-shadow .15s var(--ease); }
+.tc.press:hover { border-color: var(--card-line-hover); box-shadow: var(--shadow-hover); }
+.tc.run.press:hover { border-color: var(--ok); }
+.tc.press:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.tc.press:active .tc-disp { opacity: .8; }
 .tc-btn { border: 0; min-height: 44px; width: 100%; font-family: var(--mono); font-size: .8125rem; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--on-solid); background: var(--ok); }
 .tc-btn.stop { background: var(--danger); }
 .tc-btn:hover:not(:disabled) { filter: brightness(1.08); }
@@ -201,14 +206,30 @@ a { color: inherit; }
 .tag.removed { color: var(--danger); border-color: color-mix(in oklab, var(--danger) 55%, transparent); }
 .tag.sample { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 55%, transparent); }
 .chart { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 8px; }
-.yax { display: flex; flex-direction: column; justify-content: space-between; font-family: var(--mono); font-size: .625rem; line-height: 1; color: var(--text-muted); text-align: right; height: 110px; }
-.plot { min-width: 0; }
-.plot svg { width: 100%; height: 110px; display: block; border-bottom: 1px solid var(--line-strong); overflow: visible; }
+.yax { display: flex; flex-direction: column; justify-content: space-between; font-family: var(--mono); font-size: .625rem; line-height: 1; color: var(--text-muted); text-align: right; height: 120px; padding: 2px 0; width: 2.5rem; white-space: nowrap; }
+/* One fixed width for the hour labels, so every graph of a tracker starts and ends at the same x. */
+.plot { min-width: 0; position: relative; touch-action: pan-y; cursor: crosshair; border-radius: 2px; }
+.plot:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.plot svg { display: block; border-bottom: 1px solid var(--line-strong); overflow: visible; }
 .xax { grid-column: 2; display: flex; justify-content: space-between; gap: 8px; font-family: var(--mono); font-size: .625rem; color: var(--text-muted); margin-top: 4px; }
-.bar { fill: var(--accent); opacity: .78; }
-.bar.rm { fill: var(--text-muted); opacity: .6; }
+.gline { fill: none; stroke: var(--accent); stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; }
+.gdot { fill: var(--card); stroke: var(--accent); stroke-width: 1.5; }
+.gdot.on { fill: var(--accent); }
+.gline.rm { stroke: var(--text-muted); }
+.gdot.rm { stroke: var(--text-muted); }
+.gdot.rm.on { fill: var(--text-muted); }
 .gl { stroke: var(--line); stroke-width: 1; }
-.medl { stroke: var(--text); stroke-width: 1.3; stroke-dasharray: 5 4; }
+.gcur { stroke: var(--line-strong); stroke-width: 1; }
+.medl { stroke: var(--text); stroke-width: 1.3; stroke-dasharray: 5 4; opacity: .7; }
+.gtip { position: absolute; z-index: 2; pointer-events: none; white-space: nowrap; font-family: var(--mono); font-size: .72rem; line-height: 1.3; padding: 4px 8px; border-radius: 6px; background: var(--text); color: var(--surface); box-shadow: var(--shadow-rest); }
+/* The Total graph leads, on its own tint of the theme's accent so it reads as the main one. */
+.grow.total { margin-bottom: 22px; }
+.grow.total .card { background: color-mix(in oklab, var(--accent) 8%, var(--card)); border-color: color-mix(in oklab, var(--accent) 50%, var(--card-line)); }
+.grow.total .gt { font-weight: 600; }
+.grow.total .gline { stroke-width: 2.25; }
+.grow.total .gdot { fill: color-mix(in oklab, var(--accent) 8%, var(--card)); }
+.grow.total .gdot.on { fill: var(--accent); }
+.grow.total .mcard .v { color: var(--accent); }
 .mcard { padding: 12px 16px; display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; }
 .mcard .k { font-family: var(--mono); font-size: .625rem; letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); }
 .mcard .v { font-family: var(--mono); font-size: 1.55rem; line-height: 1.15; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }

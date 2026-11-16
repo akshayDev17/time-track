@@ -2,21 +2,20 @@
 
 import { useEffect, useState } from 'react';
 import { ApiError, getHistory, getMe, isSignedOut, SIGN_IN_HREF } from '../../../lib/api';
-import { graphs, medianNote, type Range } from '../../../lib/charts';
-import { serverNow } from '../../../lib/clock';
+import { charts, medianNote, type Range } from '../../../lib/charts';
 import { dateLabel } from '../../../lib/format';
 import { homeHref, slugOf, trackerHref } from '../../../lib/paths';
 import type { HistoryResponse } from '../../../lib/types';
-import { browserZone, localDate } from '../../../lib/zones';
 import Masthead from '../../components/Masthead';
 import { GraphRow } from '../../components/parts';
 
 const RANGES: [Range, string][] = [[30, '30 days'], [90, '90 days'], ['all', 'All']];
 
 /**
- * The Charts page (view 11): one graph per timer from its saved days, with a median card
- * each, over 30 / 90 / All (opening on 30, A1). A removed timer keeps its graph, marked
- * removed (A3). Discarded days were never saved, so they never show here.
+ * The Charts page (view 11): the Total graph first (every timer's time, day by day), then one
+ * graph per timer, each with its median card, over 30 / 90 / All (opening on 30, A1), all on
+ * one axis from the tracker's first saved day (lib/charts.ts). A removed timer keeps its
+ * graph, marked removed (A3). Discarded days were never saved, so they never show here.
  */
 export default function ChartsPage() {
   const [slug, setSlug] = useState<string | null>(null);
@@ -42,8 +41,7 @@ export default function ChartsPage() {
 
   const name = history?.name ?? 'Tracker';
   const tail = [{ label: 'Trackers', href: homeHref() }, { label: name, href: slug ? trackerHref(slug) : undefined }, { label: 'Charts' }];
-  const today = localDate(serverNow(), browserZone());
-  const rows = history ? graphs(history, today, range) : [];
+  const data = history ? charts(history, range) : null;
 
   return (
     <div className="pw">
@@ -65,19 +63,27 @@ export default function ChartsPage() {
               <a className="btn ghost sm" href={trackerHref(history.slug)}>Back to tracker</a>
             </div>
           </div>
-          <p className="gnote">One graph per timer. Each bar is one saved day; days that were not saved stay empty. The dashed line is the median.</p>
-          {history.days.length ? (
-            rows.map((g) => (
+          <p className="gnote">The total of every timer comes first, then one graph per timer, all on the same dates. Each circle is a saved day; hover or tap one to read it. The dashed line is the median.</p>
+          {data ? (
+            [data.total, ...data.timers].map((g) => (
               <GraphRow
-                key={g.timer.id}
+                key={g.key}
                 title={g.title}
-                bars={g.bars}
+                points={g.points}
+                tips={g.tips}
                 median={g.median}
                 medianNote={medianNote(g.saved, range)}
-                from={g.from}
-                to={g.to}
-                removed={g.timer.removed_on !== null}
-                sub={g.timer.removed_on ? `Removed ${dateLabel(g.timer.removed_on)}. Its saved days stay.` : undefined}
+                from={data.from}
+                to={data.to}
+                total={g.timer === null}
+                removed={g.timer?.removed_on != null}
+                sub={
+                  g.timer?.removed_on
+                    ? `Removed ${dateLabel(g.timer.removed_on)}. Its saved days stay.`
+                    : g.addedOn
+                      ? `Added ${dateLabel(g.addedOn)}: drawn as 0 before then; its median counts only the days since.`
+                      : undefined
+                }
               />
             ))
           ) : (

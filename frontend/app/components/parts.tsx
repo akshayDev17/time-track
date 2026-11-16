@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useReducer } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import { displayPieces, dur } from '../../lib/format';
 import { elapsedAt, isRunning, MAX_TIMERS, type CardMode, type Pill as PillT } from '../../lib/views';
 import type { Timer } from '../../lib/types';
@@ -55,7 +55,9 @@ function Display({ timer, clock }: { timer: Timer; clock: () => number }) {
  * One timer card, as on the reference: number badge, display, one full-width button. Stopped
  * with time, the button is Resume and Clear is a small trash icon in the top corner, away
  * from it (answer 8). `live` works; `ended` leaves only a running timer's Stop (view 5b);
- * `grey` is look, not click.
+ * `grey` is look, not click. Clicking anywhere else on a card that works presses its button
+ * (answer 11), and so do Enter and Space with the card focused; its own buttons and fields
+ * only do their own thing.
  */
 export function TimerCard({
   n, timer, mode, clock, onStart, onStop, onClear,
@@ -72,8 +74,24 @@ export function TimerCard({
   const grey = mode === 'grey' || (mode === 'ended' && !run);
   const hasTime = !run && elapsedAt(timer, clock()) > 0;
   const label = timer.name || `timer ${n}`;
+  const verb = run ? 'Stop' : hasTime ? 'Resume' : 'Start';
+  const toggle = run ? onStop : onStart;
+  const ownControl = (target: EventTarget) => target instanceof Element && target.closest('button, input, a, textarea, select') !== null;
   return (
-    <div className={`tc${run ? ' run' : ''}${grey ? ' grey' : ''}`}>
+    <div
+      className={`tc${run ? ' run' : ''}${grey ? ' grey' : ' press'}`}
+      tabIndex={grey ? undefined : 0}
+      role={grey ? undefined : 'group'}
+      aria-label={grey ? undefined : `${label}: click the card to ${verb.toLowerCase()}`}
+      onClick={grey ? undefined : (e) => {
+        if (!ownControl(e.target)) toggle();
+      }}
+      onKeyDown={grey ? undefined : (e) => {
+        if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return;
+        e.preventDefault();
+        toggle();
+      }}
+    >
       <div className="tc-top">
         <span className="tc-no">{n}</span>
         <span className="tc-name">{timer.name}</span>
@@ -84,13 +102,9 @@ export function TimerCard({
         )}
       </div>
       <div className="tc-disp"><Display timer={timer} clock={clock} /></div>
-      {run ? (
-        <button type="button" className="tc-btn stop" disabled={grey} aria-label={`Stop ${label}`} onClick={onStop}>Stop</button>
-      ) : (
-        <button type="button" className="tc-btn" disabled={grey} aria-label={`${hasTime ? 'Resume' : 'Start'} ${label}`} onClick={onStart}>
-          {hasTime ? 'Resume' : 'Start'}
-        </button>
-      )}
+      <button type="button" className={`tc-btn${run ? ' stop' : ''}`} disabled={grey} aria-label={`${verb} ${label}`} onClick={toggle}>
+        {verb}
+      </button>
     </div>
   );
 }
@@ -176,12 +190,35 @@ export function RenameGrid({
   );
 }
 
-/** One graph (a bar per day, minutes; `null` stays empty) with its median card beside it. */
+const PLOT_H = 120;
+const PAD_X = 8;
+const PAD_Y = 6;
+
+/** Each run of consecutive drawn points, as [index, value] pairs. */
+function runs(points: (number | null)[]): [number, number][][] {
+  const out: [number, number][][] = [];
+  let run: [number, number][] = [];
+  points.forEach((v, i) => {
+    if (v === null) {
+      if (run.length) out.push(run);
+      run = [];
+    } else run.push([i, v]);
+  });
+  if (run.length) out.push(run);
+  return out;
+}
+
+/**
+ * One graph: a line through each day's minutes with a circle on every drawn day (`null` draws
+ * nothing and breaks the line), the dashed median, and its median card beside it. Hover, tap
+ * or the arrow keys (the plot is focusable) show a day's date and value.
+ */
 export function GraphRow({
-  title, bars, median, medianNote, from, to, sub, removed, sample,
+  title, points, tips, median, medianNote, from, to, sub, removed, sample, total,
 }: {
   title: string;
-  bars: (number | null)[];
+  points: (number | null)[];
+  tips: string[];
   median: number | null;
   medianNote: string;
   from: string;
@@ -189,15 +226,56 @@ export function GraphRow({
   sub?: string;
   removed?: boolean;
   sample?: boolean;
+  total?: boolean;
 }) {
-  const n = Math.max(1, bars.length);
-  const values = bars.filter((v): v is number => v !== null);
+  const plot = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(600);
+  const [at, setAt] = useState<number | null>(null);
+  useEffect(() => {
+    const el = plot.current;
+    if (!el) return;
+    const measure = () => setWidth(Math.max(1, el.clientWidth));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  useEffect(() => {
+    if (at === null) return;
+    // a tap elsewhere (or a click outside the plot) puts the readout away
+    const away = (e: PointerEvent) => {
+      if (!plot.current?.contains(e.target as Node)) setAt(null);
+    };
+    document.addEventListener('pointerdown', away);
+    return () => document.removeEventListener('pointerdown', away);
+  }, [at]);
+
+  const n = points.length;
+  const values = points.filter((v): v is number => v !== null);
   const maxH = Math.max(1, Math.ceil(Math.max(0, ...values) / 60));
   const top = maxH * 60;
-  const y = (v: number) => (100 - (v / top) * 100).toFixed(2);
   const mid = maxH / 2;
+  const step = n > 1 ? (width - 2 * PAD_X) / (n - 1) : 0;
+  const x = (i: number) => (n > 1 ? PAD_X + i * step : width / 2);
+  const y = (v: number) => PAD_Y + (1 - v / top) * (PLOT_H - 2 * PAD_Y);
+  const r = Math.max(1.75, Math.min(4, step / 3 || 4));
+  const pick = (clientX: number) => {
+    const box = plot.current!.getBoundingClientRect();
+    const i = n > 1 ? Math.round((clientX - box.left - PAD_X) / step) : 0;
+    setAt(Math.max(0, Math.min(n - 1, i)));
+  };
+  // the readout sits above the day's point (below it near the top), never past either edge
+  const tipLeft = at === null ? 0 : Math.max(0, Math.min(100, (x(at) / width) * 100));
+  const pointY = at === null || points[at] === null ? PLOT_H / 2 : y(points[at]!);
+  const above = pointY > 34;
+  const tipStyle = {
+    left: `${tipLeft}%`,
+    top: `${above ? pointY - r - 6 : pointY + r + 6}px`,
+    transform: `translate(-${tipLeft}%, ${above ? '-100%' : '0'})`,
+  };
+
   return (
-    <div className="grow">
+    <div className={`grow${total ? ' total' : ''}`}>
       <div className="card gcard">
         <div className="ghead">
           <span className="gt">{title}</span>
@@ -207,22 +285,51 @@ export function GraphRow({
         </div>
         <div className="chart">
           <div className="yax"><span>{maxH} h</span><span>{Number.isInteger(mid) ? mid : mid.toFixed(1)} h</span><span>0</span></div>
-          <div className="plot">
-            <svg viewBox={`0 0 ${n} 100`} preserveAspectRatio="none" aria-hidden="true">
-              <line className="gl" x1="0" x2={n} y1="50" y2="50" vectorEffect="non-scaling-stroke" />
-              {bars.map((v, i) =>
+          <div
+            className="plot"
+            ref={plot}
+            tabIndex={0}
+            role="group"
+            aria-roledescription="chart"
+            aria-label={`${title}, ${from} to ${to}. Use the arrow keys to read each day.`}
+            onPointerMove={(e) => pick(e.clientX)}
+            onPointerDown={(e) => pick(e.clientX)}
+            onPointerLeave={(e) => {
+              if (e.pointerType === 'mouse') setAt(null);
+            }}
+            onBlur={() => setAt(null)}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                e.preventDefault();
+                const d = e.key === 'ArrowRight' ? 1 : -1;
+                setAt((i) => Math.max(0, Math.min(n - 1, i === null ? (d > 0 ? 0 : n - 1) : i + d)));
+              } else if (e.key === 'Escape') setAt(null);
+            }}
+          >
+            <svg width={width} height={PLOT_H} viewBox={`0 0 ${width} ${PLOT_H}`} aria-hidden="true">
+              <line className="gl" x1="0" x2={width} y1={y(mid * 60)} y2={y(mid * 60)} />
+              {median !== null && <line className="medl" x1="0" x2={width} y1={y(median)} y2={y(median)} />}
+              {at !== null && <line className="gcur" x1={x(at)} x2={x(at)} y1="0" y2={PLOT_H} />}
+              {runs(points).map((run) => (
+                <polyline key={run[0][0]} className={`gline${removed ? ' rm' : ''}`} points={run.map(([i, v]) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')} />
+              ))}
+              {points.map((v, i) =>
                 v === null ? null : (
-                  <rect key={i} className={`bar${removed ? ' rm' : ''}`} x={i + 0.15} y={v === 0 ? 99 : y(v)} width="0.7" height={v === 0 ? 1 : ((v / top) * 100).toFixed(2)} />
+                  <circle key={i} className={`gdot${removed ? ' rm' : ''}${i === at ? ' on' : ''}`} cx={x(i)} cy={y(v)} r={i === at ? r + 1.5 : r} />
                 ),
               )}
-              {median !== null && <line className="medl" x1="0" x2={n} y1={y(median)} y2={y(median)} vectorEffect="non-scaling-stroke" />}
             </svg>
+            {at !== null && (
+              <div className="gtip" role="status" style={tipStyle}>
+                {tips[at]}
+              </div>
+            )}
           </div>
           <div className="xax"><span>{from}</span><span>{to}</span></div>
         </div>
       </div>
       <div className="card mcard">
-        <span className="k">Median</span>
+        <span className="k">{total ? 'Median total' : 'Median'}</span>
         <span className="v">{median !== null ? dur(median) : '–'}</span>
         <span className="s">{medianNote}</span>
       </div>

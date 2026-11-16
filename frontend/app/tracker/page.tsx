@@ -162,7 +162,7 @@ export default function TrackerPage() {
       <ControlBar
         timers={ts}
         mode={mode}
-        onAction={(a) => (a === 'clear-all' ? setConfirm({ kind: 'clear-all' }) : void run(() => api.trackerAction(s, a)))}
+        onAction={(a) => (a === 'clear-all' ? setConfirm({ kind: 'clear-all' }) : void run(() => api.trackerAction(s, a), { kind: a }))}
         extra={<span className="count">{ts.length} of 15 timers</span>}
       />
       <div className="tgrid">
@@ -173,8 +173,8 @@ export default function TrackerPage() {
             timer={t}
             mode={mode}
             clock={serverNow}
-            onStart={() => void run(() => api.timerAction(s, t.id, 'start'))}
-            onStop={() => void run(() => api.timerAction(s, t.id, 'stop'))}
+            onStart={() => void run(() => api.timerAction(s, t.id, 'start'), { kind: 'start', id: t.id })}
+            onStop={() => void run(() => api.timerAction(s, t.id, 'stop'), { kind: 'stop', id: t.id })}
             onClear={() => setConfirm({ kind: 'clear', id: t.id })}
           />
         ))}

@@ -4,7 +4,7 @@ The store's SQL is the only SQL in this app; tests and ``local_server.py`` run t
 SQL through this wrapper, so what is tested is what ships. It models the slice of the D1
 API the store uses: ``db.prepare(sql).bind(*params)`` with async ``first()`` (a ``dict``
 or ``None``), ``all()`` (``.results``, a list of ``dict``) and ``run()``, plus
-``db.batch(statements)``, which runs them in one transaction as D1 does ("Batched
+``db.batch(statements)``, which runs them in one transaction and answers each one's rows, as D1 does ("Batched
 statements are SQL transactions"). ``PRAGMA foreign_keys = ON`` matches D1's default.
 """
 
@@ -56,15 +56,15 @@ class SqliteD1:
         return _Statement(self._conn, sql)
 
     async def batch(self, statements) -> list[SimpleNamespace]:
+        """Every statement's result (``.results``, its rows), in order, as D1 answers a batch."""
         self._conn.execute("BEGIN")
         try:
-            for statement in statements:
-                statement._execute()
+            results = [SimpleNamespace(success=True, results=statement._execute()) for statement in statements]
         except BaseException:
             self._conn.execute("ROLLBACK")
             raise
         self._conn.execute("COMMIT")
-        return [SimpleNamespace(success=True) for _ in statements]
+        return results
 
     def executescript(self, sql: str) -> None:
         """Apply a migration (not part of the D1 binding)."""

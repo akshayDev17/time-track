@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { SIGN_IN_HREF } from '../../lib/api';
-import { applyDemo, DEMO_KEY, freshDemo, loadDemo, saveDemo, type DemoAction } from '../../lib/demo';
-import { median } from '../../lib/format';
+import { DEMO_KEY, freshDemo, loadDemo, saveDemo } from '../../lib/demo';
+import { applyTimers, type TimerAction } from '../../lib/timers';
+import { dur, median } from '../../lib/format';
 import { SAMPLE_DAYS } from '../../lib/sample';
 import type { Timer } from '../../lib/types';
 import { ConfirmDialog } from './Dialog';
@@ -31,9 +32,9 @@ export default function PublicDemo() {
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  const act = useCallback((a: DemoAction) => {
+  const act = useCallback((a: TimerAction) => {
     setTimers((ts) => {
-      const next = applyDemo(ts, a, Date.now());
+      const next = applyTimers(ts, a, Date.now());
       saveDemo(next);
       return next;
     });
@@ -78,13 +79,14 @@ export default function PublicDemo() {
         <div className="ps"><h3>What the charts look like</h3><span className="tag sample">Sample data</span></div>
         <p className="gnote">Made-up days, one graph per timer, with the median beside each. Signed-in trackers draw these from your saved days.</p>
         {timers.map((t, i) => {
-          const bars = SAMPLE_DAYS[i];
-          const nums = bars.filter((v): v is number => v !== null);
+          const points = SAMPLE_DAYS[i];
+          const nums = points.filter((v): v is number => v !== null);
           return (
             <GraphRow
               key={t.id}
               title={t.name || `Timer ${i + 1}`}
-              bars={bars}
+              points={points}
+              tips={points.map((v, d) => `Day ${d + 1} · ${v === null ? 'not saved' : dur(v)}`)}
               median={median(nums)}
               medianNote={`a day, over ${nums.length} sample days`}
               from="Day 1"

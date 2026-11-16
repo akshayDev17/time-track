@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getTracker, ApiError } from '../../lib/api';
-import { LOADING, changed, changeFailed, dismissed, pollFailed, polled, type Load } from '../../lib/load';
+import { serverNow } from '../../lib/clock';
+import { LOADING, changed, changeFailed, dismissed, pollFailed, polled, pressed, type Load } from '../../lib/load';
+import type { TimerAction } from '../../lib/timers';
 import type { TrackerResponse } from '../../lib/types';
 
 /** How often a visible tracker page asks the server for changes made on other devices. */
@@ -12,7 +14,10 @@ const CHANNEL = 'time-track';
 /**
  * One tracker's server state, kept fresh: polled while the tab is visible, reloaded when it
  * comes back, and announced to this browser's other tabs (BroadcastChannel) after each change
- * so they follow at once. `run` sends one change and takes the server's answer as the state.
+ * so they follow at once. `run` sends one change and takes the server's answer as the state;
+ * given the timer action it makes, the press shows at once, stamped with the server's clock
+ * (lib/load.ts), and snaps back if the server refuses it. Changes go one at a time, in the
+ * order pressed, so each answer holds every earlier press.
  *
  * `slug` is undefined until the page has read its URL (nothing is known yet, nothing is
  * asked) and null when the URL names no tracker (missing, without asking).
@@ -34,21 +39,28 @@ export function useTracker(slug: string | null | undefined) {
     );
   }, [slug]);
 
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
   const run = useCallback(
-    async (call: () => Promise<TrackerResponse>): Promise<ApiError | null> => {
+    (call: () => Promise<TrackerResponse>, action?: TimerAction): Promise<ApiError | null> => {
       busy.current += 1;
       changes.current += 1;
-      try {
-        const r = await call();
-        setState(changed(r.tracker));
-        channel.current?.postMessage({ slug });
-        return null;
-      } catch (e) {
-        setState((s) => changeFailed(s, e));
-        return e instanceof ApiError ? e : null;
-      } finally {
-        busy.current -= 1;
-      }
+      const id = changes.current;
+      if (action) setState((s) => pressed(s, { id, action, at: serverNow() }));
+      const sent = queue.current.then(async () => {
+        try {
+          const r = await call();
+          setState((s) => changed(s, id, r.tracker));
+          channel.current?.postMessage({ slug });
+          return null;
+        } catch (e) {
+          setState((s) => changeFailed(s, id, e));
+          return e instanceof ApiError ? e : null;
+        } finally {
+          busy.current -= 1;
+        }
+      });
+      queue.current = sent;
+      return sent;
     },
     [slug],
   );
