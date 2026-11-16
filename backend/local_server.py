@@ -7,7 +7,8 @@ Run:  uv run python local_server.py     (then GET http://127.0.0.1:8787/time-tra
 
 Environment:
   PORT            listen port (default 8787)
-  DB_PATH         SQLite file (default backend/time-track.db, created from the migrations)
+  DB_PATH         SQLite file (default backend/time-track.db, created and kept up to date
+                  from the migrations)
   DEV_EMAIL       the signed-in user (default dev@example.com)
   SIGNED_OUT=1    start signed out: every request is answered the way Access answers a
                   visitor with no session, a 302 to the Access login (the public page then
@@ -52,11 +53,20 @@ LOCK = threading.Lock()
 
 
 def open_db(path: Path) -> SqliteD1:
-    fresh = not path.exists()
-    db = SqliteD1(sqlite3.connect(str(path), check_same_thread=False))
-    if fresh:
-        for migration in sorted((HERE / "migrations").glob("*.sql")):
+    """The SQLite file, with every migration numbered above its ``PRAGMA user_version`` applied
+    in order and that version recorded. A file made before the version was kept already holds
+    0001's tables, so it counts as version 1."""
+    conn = sqlite3.connect(str(path), check_same_thread=False)
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version == 0 and conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trackers'").fetchone():
+        version = 1
+    db = SqliteD1(conn)
+    for migration in sorted((HERE / "migrations").glob("*.sql")):
+        number = int(migration.name.split("_", 1)[0])
+        if number > version:
             db.executescript(migration.read_text())
+            version = number
+            conn.execute(f"PRAGMA user_version = {version}")
     return db
 
 

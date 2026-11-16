@@ -296,8 +296,7 @@ def test_a_press_time_earlier_than_the_timers_last_change_uses_the_server_clock(
     c.advance(5_000)
     # a start never before the last stop, so no time is counted twice
     assert pressed(c, slug, f"timers/{ids[0]}/start", stopped - 1)[0]["running_since_ms"] == c.now
-    # nor before the day began, nor before a Clear
-    assert pressed(c, slug, f"timers/{ids[1]}/start", c.now - MINUTE - 1)[1]["running_since_ms"] == c.now
+    # nor before a Clear
     c.ok("POST", f"/trackers/{slug}/stop-all")
     c.advance(5_000)
     cleared = c.now
@@ -315,3 +314,19 @@ def test_a_press_time_earlier_than_the_timers_last_change_uses_the_server_clock(
     c.advance(2_000)
     timers = pressed(c, slug, "relaunch", second_start + 500)
     assert [t["running_since_ms"] for t in timers] == [second_start + 500, c.now]
+
+
+def test_a_press_time_before_the_day_began_or_the_timer_was_added_uses_the_server_clock():
+    c, slug, ids = live(2)
+    # 1 ms old, inside the window, but before Start today
+    assert pressed(c, slug, f"timers/{ids[0]}/start", c.now - 1)[0]["running_since_ms"] == c.now
+    c.advance(5_000)
+    # the same press on a timer that was there all along is used
+    assert pressed(c, slug, f"timers/{ids[1]}/start", c.now - 1)[1]["running_since_ms"] == c.now - 1
+    added = c.ok("POST", f"/trackers/{slug}/timers")["tracker"]["timers"][-1]["id"]
+    assert pressed(c, slug, f"timers/{added}/start", c.now - 1)[-1]["running_since_ms"] == c.now
+    c.advance(5_000)
+    later = c.ok("POST", f"/trackers/{slug}/timers")["tracker"]["timers"][-1]["id"]
+    c.advance(2_000)
+    # pressed after it was added: used
+    assert pressed(c, slug, f"timers/{later}/start", c.now - 1_000)[-1]["running_since_ms"] == c.now - 1_000
