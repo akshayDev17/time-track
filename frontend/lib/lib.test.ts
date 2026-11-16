@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import { dateLabel, displayPieces, dur, median, timeParts, untilLabel } from './format.ts';
 import { clockTime, dayStamp, localDate, zoneLabel, zoneMidnight } from './zones.ts';
 import { cardMode, dayPanel, listPill, trackerView } from './views.ts';
-import { graphs, medianNote, rangeDays } from './charts.ts';
-import { applyDemo, freshDemo, parseDemo } from './demo.ts';
+import { charts, medianNote, rangeDays } from './charts.ts';
+import { freshDemo, parseDemo } from './demo.ts';
+import { applyTimers } from './timers.ts';
 import { SAMPLE_DAYS } from './sample.ts';
 import { slugOf } from './paths.ts';
 import { better, sampleOf } from './clock.ts';
 import { ApiError } from './api.ts';
-import { LOADING, changeFailed, changed, dismissed, pollFailed, polled } from './load.ts';
+import { LOADING, changeFailed, changed, dismissed, pollFailed, polled, pressed } from './load.ts';
 import type { HistoryResponse, Timer, Tracker } from './types.ts';
 
 const PUNE = 'Asia/Kolkata';
@@ -147,41 +148,85 @@ const history: HistoryResponse = {
   ],
 };
 
-test('charts: 30 days ending yesterday, empty unsaved days, median over saved days only', () => {
-  const g = graphs(history, '2026-11-15', 30);
-  assert.equal(g[0].bars.length, 30);
-  assert.equal(g[0].to, 'Sat 14 Nov');
-  assert.equal(g[0].from, 'Fri 16 Oct');
-  assert.equal(g[0].bars.filter((v) => v !== null).length, 2);
-  assert.equal(g[0].median, 90);
-  assert.equal(g[1].title, 'Timer 2');
-  assert.equal(g[1].median, 15); // a saved zero counts; an unsaved day does not
-  assert.equal(g[2].saved, 1);
+test('charts: the axis runs from the first saved day to the last; 30 / 90 never start before it', () => {
+  const all = rangeDays(history, 'all');
+  assert.equal(all.end - all.start + 1, 5); // 10 Nov .. 14 Nov
+  assert.deepEqual(rangeDays(history, 30), all);
+  const c = charts(history, 30)!;
+  assert.equal(c.from, 'Tue 10 Nov');
+  assert.equal(c.to, 'Sat 14 Nov');
+  // every graph has one point per axis date, so they line up
+  for (const g of [c.total, ...c.timers]) assert.equal(g.points.length, 5);
+  assert.equal(charts({ ...history, days: [] }, 30), null);
+});
+
+test('charts: a saved zero is drawn as 0 and counts; a date with no saved day draws nothing', () => {
+  const [deep, two] = charts(history, 'all')!.timers;
+  assert.deepEqual(deep.points, [120, null, null, null, 60]);
+  assert.equal(deep.median, 90);
+  assert.equal(two.title, 'Timer 2');
+  assert.deepEqual(two.points, [0, null, null, null, 30]);
+  assert.equal(two.median, 15); // the saved zero counts
+  assert.equal(two.tips[0], 'Tue 10 Nov · 0 m');
+  assert.equal(two.tips[1], 'Wed 11 Nov · not saved');
+});
+
+test('charts: a timer added later is drawn as 0 before it existed, and its median counts only its own days', () => {
+  // four timers since 1 Nov, the fifth added 10 Nov (the owner's example)
+  const days = Array.from({ length: 14 }, (_, i) => {
+    const date = `2026-11-${String(i + 1).padStart(2, '0')}`;
+    const values: Record<string, number> = { '1': 60 * M, '2': 30 * M, '3': 0, '4': 10 * M };
+    if (i + 1 >= 10) values['5'] = 45 * M;
+    return { date, tz_label: 'Pune (IST)', values };
+  });
+  const timers = [1, 2, 3, 4, 5].map((id) => ({ id, name: `T${id}`, number: id, removed_on: null }));
+  const c = charts({ now_ms: NOW, name: 'Day', slug: 'day', timers, days }, 'all')!;
+  const fifth = c.timers[4];
+  assert.equal(c.from, 'Sun 1 Nov');
+  assert.deepEqual(fifth.points, [0, 0, 0, 0, 0, 0, 0, 0, 0, 45, 45, 45, 45, 45]);
+  assert.equal(fifth.tips[0], 'Sun 1 Nov · 0 m');
+  assert.equal(fifth.median, 45);
+  assert.equal(fifth.saved, 5);
+});
+
+test('charts: the Total graph leads with the sum of every saved value, median over saved days', () => {
+  const c = charts(history, 'all')!;
+  assert.equal(c.total.timer, null);
+  assert.equal(c.total.title, 'Total · every timer');
+  assert.deepEqual(c.total.points, [135, null, null, null, 90]); // 120 + 0 + 15 (a removed timer's saved day counts), 60 + 30
+  assert.equal(c.total.median, 112.5);
+  assert.equal(c.total.saved, 2);
+  assert.equal(c.total.tips[0], 'Tue 10 Nov · 2 h 15 m');
+});
+
+test('charts: a removed timer draws nothing after its last saved day', () => {
+  const removed = charts(history, 'all')!.timers[2];
+  assert.deepEqual(removed.points, [15, null, null, null, null]);
+  assert.equal(removed.tips[4], 'Sat 14 Nov · removed');
+  assert.equal(removed.saved, 1);
   assert.equal(medianNote(2, 30), 'a day, over 2 saved days in the last 30 days');
   assert.equal(medianNote(0, 'all'), 'No saved days in all saved days');
-  const all = rangeDays(history, '2026-11-15', 'all');
-  assert.equal(all.end - all.start + 1, 5);
 });
 
 // ── the public demo ──────────────────────────────────────────────────────────
 
 test('demo: Start all only zeros, Relaunch only stopped with time, Clear all waits', () => {
   let ts = freshDemo();
-  ts = applyDemo(ts, { kind: 'start', id: 1 }, 0);
-  ts = applyDemo(ts, { kind: 'stop', id: 1 }, 5000);
-  ts = applyDemo(ts, { kind: 'start-all' }, 6000);
+  ts = applyTimers(ts, { kind: 'start', id: 1 }, 0);
+  ts = applyTimers(ts, { kind: 'stop', id: 1 }, 5000);
+  ts = applyTimers(ts, { kind: 'start-all' }, 6000);
   assert.equal(ts[0].running_since_ms, null);
   assert.equal(ts[0].acc_ms, 5000);
   assert.ok(ts.slice(1).every((t) => t.running_since_ms === 6000));
-  assert.deepEqual(applyDemo(ts, { kind: 'clear-all' }, 7000), ts);
-  ts = applyDemo(ts, { kind: 'stop-all' }, 7000);
-  ts = applyDemo(ts, { kind: 'clear', id: 2 }, 7000);
-  ts = applyDemo(ts, { kind: 'relaunch' }, 8000);
+  assert.deepEqual(applyTimers(ts, { kind: 'clear-all' }, 7000), ts);
+  ts = applyTimers(ts, { kind: 'stop-all' }, 7000);
+  ts = applyTimers(ts, { kind: 'clear', id: 2 }, 7000);
+  ts = applyTimers(ts, { kind: 'relaunch' }, 8000);
   assert.equal(ts[0].running_since_ms, 8000);
   assert.equal(ts[1].running_since_ms, null);
-  ts = applyDemo(ts, { kind: 'rename', id: 3, name: 'Reading' }, 0);
+  ts = applyTimers(ts, { kind: 'rename', id: 3, name: 'Reading' }, 0);
   assert.equal(ts[2].name, 'Reading');
-  assert.ok(applyDemo(ts, { kind: 'delete-names' }, 0).every((t) => t.name === ''));
+  assert.ok(applyTimers(ts, { kind: 'delete-names' }, 0).every((t) => t.name === ''));
   assert.deepEqual(parseDemo(JSON.stringify(ts)), ts);
   assert.deepEqual(parseDemo('nope'), freshDemo());
 });
@@ -202,47 +247,98 @@ const SIGNED_OUT = new ApiError(401, 'Not signed in.', '', true);
 
 test('load: the first answer ends loading; a 404 is a missing tracker', () => {
   const t = tracker({});
-  assert.deepEqual(LOADING, { tracker: null, missing: false, expired: false, error: null, pollError: null });
-  assert.deepEqual(polled(LOADING, t), { ...LOADING, tracker: t });
+  assert.deepEqual(LOADING, { tracker: null, base: null, pending: [], missing: false, expired: false, error: null, pollError: null });
+  assert.deepEqual(polled(LOADING, t), { ...LOADING, tracker: t, base: t });
   assert.deepEqual(pollFailed(LOADING, GONE), { ...LOADING, missing: true });
 });
 
 test('load: a failed poll keeps the tracker and its message goes with the next good poll', () => {
   const t = tracker({});
   const asleep = pollFailed(polled(LOADING, t), OFFLINE);
-  assert.deepEqual(asleep, { ...LOADING, tracker: t, pollError: 'Failed to fetch' });
+  assert.deepEqual(asleep, { ...LOADING, tracker: t, base: t, pollError: 'Failed to fetch' });
   const later = tracker({ name: 'Renamed elsewhere' });
-  assert.deepEqual(polled(asleep, later), { ...LOADING, tracker: later });
+  assert.deepEqual(polled(asleep, later), { ...LOADING, tracker: later, base: later });
   // a first load that failed recovers the same way
-  assert.deepEqual(polled(pollFailed(LOADING, OFFLINE), t), { ...LOADING, tracker: t });
-  assert.deepEqual(dismissed(asleep), { ...LOADING, tracker: t });
+  assert.deepEqual(polled(pollFailed(LOADING, OFFLINE), t), { ...LOADING, tracker: t, base: t });
+  assert.deepEqual(dismissed(asleep), { ...LOADING, tracker: t, base: t });
 });
 
 test('load: a tracker deleted on another device is dropped by the poll that finds it gone', () => {
-  const shown = changeFailed(polled(LOADING, tracker({})), new ApiError(409, '15 of 15: the most a tracker holds.', 'timer_cap'));
+  const shown = changeFailed(polled(LOADING, tracker({})), 1, new ApiError(409, '15 of 15: the most a tracker holds.', 'timer_cap'));
   assert.deepEqual(pollFailed(shown, GONE), { ...LOADING, missing: true });
 });
 
 test('load: an expired sign-in keeps the tracker and ends with the next answer', () => {
   const t = tracker({});
   const expired = pollFailed(polled(LOADING, t), SIGNED_OUT);
-  assert.deepEqual(expired, { ...LOADING, tracker: t, expired: true });
-  assert.deepEqual(polled(expired, t), { ...LOADING, tracker: t });
-  assert.deepEqual(changeFailed(polled(LOADING, t), new ApiError(401, 'not signed in')), expired);
-  assert.deepEqual(changed(t), { ...LOADING, tracker: t });
+  assert.deepEqual(expired, { ...LOADING, tracker: t, base: t, expired: true });
+  assert.deepEqual(polled(expired, t), { ...LOADING, tracker: t, base: t });
+  assert.deepEqual(changeFailed(polled(LOADING, t), 1, new ApiError(401, 'not signed in')), expired);
+  assert.deepEqual(changed(polled(LOADING, t), 1, t), { ...LOADING, tracker: t, base: t });
 });
 
 test('load: a refused change stays through polls until dismissed or a change goes through', () => {
   const t = tracker({});
-  const refused = changeFailed(polled(LOADING, t), new ApiError(409, '15 of 15: the most a tracker holds.', 'timer_cap'));
+  const refused = changeFailed(polled(LOADING, t), 1, new ApiError(409, '15 of 15: the most a tracker holds.', 'timer_cap'));
   assert.equal(refused.error, '15 of 15: the most a tracker holds.');
   assert.equal(refused.tracker, t);
   assert.equal(polled(refused, t).error, '15 of 15: the most a tracker holds.');
   assert.equal(pollFailed(refused, OFFLINE).error, '15 of 15: the most a tracker holds.');
   assert.equal(dismissed(refused).error, null);
-  assert.equal(changed(t).error, null);
-  assert.equal(changeFailed(polled(LOADING, t), OFFLINE).error, 'Failed to fetch');
-  assert.equal(changeFailed(polled(LOADING, t), 'not an Error').error, 'Something went wrong.');
+  assert.equal(changed(refused, 2, t).error, null);
+  assert.equal(changeFailed(polled(LOADING, t), 1, OFFLINE).error, 'Could not reach Time Track, so that change did not go through. Try again.');
+});
+
+const idle = (): Tracker =>
+  tracker({ timers: [{ id: 1, name: 'A', acc_ms: 5000, running_since_ms: null }, { id: 2, name: 'B', acc_ms: 0, running_since_ms: 1000 }] });
+
+test('load: a press shows at once from the server clock, and the answer replaces it', () => {
+  const t = idle();
+  // stop timer 2 and start timer 1: both show before any answer
+  let s = pressed(polled(LOADING, t), { id: 1, action: { kind: 'stop', id: 2 }, at: 4000 });
+  s = pressed(s, { id: 2, action: { kind: 'start', id: 1 }, at: 4100 });
+  assert.deepEqual(s.tracker!.timers, [
+    { id: 1, name: 'A', acc_ms: 5000, running_since_ms: 4100 },
+    { id: 2, name: 'B', acc_ms: 3000, running_since_ms: null },
+  ]);
+  assert.equal(s.base, t, 'nothing confirmed yet');
+  // the first answer (the server's own clock) arrives: the second press stays on top of it
+  const afterStop = tracker({ timers: [{ id: 1, name: 'A', acc_ms: 5000, running_since_ms: null }, { id: 2, name: 'B', acc_ms: 3200, running_since_ms: null }] });
+  s = changed(s, 1, afterStop);
+  assert.deepEqual(s.tracker!.timers.map((x) => [x.acc_ms, x.running_since_ms]), [[5000, 4100], [3200, null]]);
+  assert.equal(s.pending.length, 1);
+  // the second answer: nothing pending, the server's state as it is
+  const afterStart = tracker({ timers: [{ id: 1, name: 'A', acc_ms: 5000, running_since_ms: 4300 }, afterStop.timers[1]] });
+  s = changed(s, 2, afterStart);
+  assert.deepEqual(s, { ...LOADING, tracker: afterStart, base: afterStart });
+});
+
+test('load: stop one timer then start another, the first answer slow: the start stays at its click time', () => {
+  const t = tracker({ timers: [{ id: 1, name: 'A', acc_ms: 0, running_since_ms: 1000 }, { id: 2, name: 'B', acc_ms: 0, running_since_ms: null }] });
+  let s = pressed(polled(LOADING, t), { id: 1, action: { kind: 'stop', id: 1 }, at: 61000 });
+  s = pressed(s, { id: 2, action: { kind: 'start', id: 2 }, at: 61100 });
+  const shown = (x: typeof s) => x.tracker!.timers.map((y) => [y.acc_ms, y.running_since_ms]);
+  assert.deepEqual(shown(s), [[60000, null], [0, 61100]]);
+  // 1.5 s later the stop's answer, stamped at its press: the start, still waiting, stays on top
+  s = changed(s, 1, tracker({ timers: [{ ...t.timers[0], acc_ms: 60000, running_since_ms: null }, t.timers[1]] }));
+  assert.deepEqual(shown(s), [[60000, null], [0, 61100]]);
+  // then the start's answer, stamped at its click: nothing moves
+  s = changed(s, 2, tracker({ timers: [{ ...t.timers[0], acc_ms: 60000, running_since_ms: null }, { ...t.timers[1], running_since_ms: 61100 }] }));
+  assert.deepEqual(shown(s), [[60000, null], [0, 61100]]);
+  assert.deepEqual(s.pending, []);
+});
+
+test('load: a refused press snaps back with the reason; a later press stays', () => {
+  const t = idle();
+  let s = pressed(polled(LOADING, t), { id: 1, action: { kind: 'start', id: 1 }, at: 4000 });
+  s = pressed(s, { id: 2, action: { kind: 'stop', id: 2 }, at: 4100 });
+  s = changeFailed(s, 1, new ApiError(409, 'This day has ended: only Stop and Stop all work.', 'day_ended'));
+  assert.equal(s.error, 'This day has ended: only Stop and Stop all work.');
+  assert.deepEqual(s.tracker!.timers.map((x) => [x.acc_ms, x.running_since_ms]), [[5000, null], [3100, null]]);
+  // a press that never arrived snaps back too
+  s = changeFailed(s, 2, OFFLINE);
+  assert.deepEqual(s.tracker, t);
+  assert.equal(s.error, 'Could not reach Time Track, so that change did not go through. Try again.');
 });
 
 // ── paths and the clock ──────────────────────────────────────────────────────
@@ -265,4 +361,7 @@ test('server clock offset keeps the sample with the shortest round trip', () => 
   // this device's clock jumped an hour: the new offset wins at once, round trip or not
   const jumped = sampleOf(40_000 + 3_600_000, 4_000, 4_900);
   assert.deepEqual(better(a, jumped), jumped);
+  // an odd sent + received sum still gives whole milliseconds: the server takes only an
+  // integer pressed_at_ms, so a .5 offset would make every press stamped on arrival
+  assert.ok(Number.isInteger(sampleOf(10_000, 1_000, 1_201).offset));
 });

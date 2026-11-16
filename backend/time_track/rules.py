@@ -26,6 +26,10 @@ MAX_DAY_MS = 26 * HOUR_MS
 #: How far ahead of the server a browser's idea of the day's start may be (its clock is synced
 #: to the server's, so this only absorbs the round trip).
 SKEW_MS = 120_000
+#: A timer button's press time (the page's reading of the server clock at the click) is used
+#: when it is at most this old when the server hears it, and at most PRESS_SKEW_MS ahead.
+PRESS_MAX_AGE_MS = 10_000
+PRESS_SKEW_MS = 1_000
 
 #: First path segments the app's own pages and files use, so no tracker may take them.
 RESERVED_SLUGS = frozenset({"api", "new", "signin", "tracker", "charts", "index", "404", "_next", "_site"})
@@ -129,6 +133,16 @@ def day_stamp(body: dict, now_ms: int) -> dict:
     if not (start - SKEW_MS <= now_ms < end):
         raise Invalid("That date is not today where you are. Reload the page and press Start today again.", "date_not_today")
     return {"date": date, "tz": tz, "tz_label": tz_label, "day_start_ms": start, "day_end_ms": end}
+
+
+def press_time(body: dict, now_ms: int) -> int:
+    """When a timer button was pressed: the page's ``pressed_at_ms`` (on the server's clock)
+    when it lies in [now - PRESS_MAX_AGE_MS, now + PRESS_SKEW_MS], else now. The store also
+    falls back to now for a timer whose last change is later than it."""
+    value = body.get("pressed_at_ms")
+    if isinstance(value, int) and not isinstance(value, bool) and now_ms - PRESS_MAX_AGE_MS <= value <= now_ms + PRESS_SKEW_MS:
+        return value
+    return now_ms
 
 
 def last_day_choice(body: dict) -> str | None:

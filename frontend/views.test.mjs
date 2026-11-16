@@ -107,6 +107,8 @@ async function look(page, view) {
     await page.setViewportSize({ width: v.width, height: v.height });
     for (const scheme of ['light', 'dark']) {
       await page.emulateMedia({ colorScheme: scheme });
+      const want = `classic-${scheme}`;
+      await page.waitForFunction((t) => document.documentElement.dataset.theme === t, want, { timeout: 3000 }).catch(() => {});
       await page.waitForTimeout(150);
       const theme = await page.evaluate(() => document.documentElement.dataset.theme);
       assert.equal(theme, `classic-${scheme}`, `${view}: site-shell's theme follows the system`);
@@ -205,6 +207,10 @@ test('every view and transition on the board', async () => {
   assert.deepEqual([await enabled(page, 'Start today'), await enabled(page, 'Save last day'), await enabled(page, 'Discard last day')], [true, false, false]);
   assert.equal(await page.getByLabel('Name for timer 1', { exact: true }).isDisabled(), true, 'rename greyed before Start today (C4)');
   await text(page, 'Greyed out until Start today.');
+  await page.locator('.tc.grey').first().click({ force: true });
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator('.tc.grey').count(), 8, 'a greyed card is look, not click');
+  assert.equal(await page.locator('.tc[tabindex]').count(), 0, 'and it takes no focus');
   await look(page, 'v4-before-start-today');
 
   // ── 7 · today's open day ──────────────────────────────────────────────────
@@ -222,6 +228,79 @@ test('every view and transition on the board', async () => {
   await btn(page, 'Start Deep work').click();
   await page.locator('.tc.run').first().waitFor();
   await text(page, '1 running');
+
+  // a press shows at once: clicking the card (not its button) stops it while the answer is held
+  const card = (name) => page.locator('.tc', { has: page.locator('.tc-name', { hasText: name }) });
+  const stopUrl = /\/time-track\/api\/trackers\/workday\/timers\/\d+\/stop$/;
+  let releaseStop;
+  const heldStop = new Promise((r) => (releaseStop = r));
+  await page.route(stopUrl, async (route) => {
+    await heldStop;
+    await route.continue();
+  });
+  await card('Deep work').locator('.tc-disp').click();
+  await btn(page, 'Resume Deep work').waitFor({ timeout: 500 });
+  releaseStop();
+  await page.waitForResponse(stopUrl);
+  await page.unroute(stopUrl);
+  // Enter on the focused card starts it again, at once
+  await card('Deep work').focus();
+  await page.keyboard.press('Enter');
+  await btn(page, 'Stop Deep work').waitFor({ timeout: 500 });
+  // a press the server refuses snaps back, with the reason
+  const startUrl = /\/time-track\/api\/trackers\/workday\/timers\/\d+\/start$/;
+  await page.route(startUrl, async (route) => {
+    await new Promise((r) => setTimeout(r, 400));
+    await route.fulfill({
+      status: 409,
+      headers: { 'access-control-allow-origin': app, 'access-control-allow-credentials': 'true', 'content-type': 'application/json' },
+      body: JSON.stringify({ error: 'This day has ended: only Stop and Stop all work.', code: 'day_ended' }),
+    });
+  });
+  await card('Meetings').click({ position: { x: 20, y: 60 } });
+  await btn(page, 'Stop Meetings').waitFor({ timeout: 300 });
+  await btn(page, 'Start Meetings').waitFor();
+  await text(page, 'This day has ended: only Stop and Stop all work.');
+  await page.unroute(startUrl);
+  // the browser logs that refused answer as a console error: the one this step asked for
+  const refusedLog = errors.findIndex((e) => e.endsWith('the server responded with a status of 409 (Conflict)'));
+  assert.ok(refusedLog >= 0);
+  errors.splice(refusedLog, 1);
+  await btn(page, 'Dismiss').click();
+  assert.equal(await page.locator('.tc.run').count(), 1, 'only Deep work runs');
+  // Stop one timer, then start another at once while the stop's answer is slow: the start is
+  // sent after that answer, stamped with its own click time, so its time never jumps back
+  const shown = async (name) => {
+    const [h, m, s] = (await card(name).locator('.tc-disp').textContent()).split(':').map(Number);
+    return ((h * 60 + m) * 60 + s) * 1000;
+  };
+  let releaseSlow;
+  const slowStop = new Promise((r) => (releaseSlow = r));
+  await page.route(stopUrl, async (route) => {
+    await slowStop;
+    await route.continue();
+  });
+  const startSent = page.waitForRequest(startUrl);
+  await btn(page, 'Stop Deep work').click();
+  await btn(page, 'Start Meetings').click();
+  await btn(page, 'Stop Meetings').waitFor({ timeout: 300 });
+  await page.waitForTimeout(1500);
+  const beforeAnswers = await shown('Meetings');
+  releaseSlow();
+  const startRequest = await startSent;
+  const startAnswer = await (await startRequest.response()).json();
+  await page.unroute(stopUrl);
+  const meetingsId = Number(startRequest.url().match(/timers\/(\d+)\/start$/)[1]);
+  const pressedAt = startRequest.postDataJSON().pressed_at_ms;
+  assert.equal(startAnswer.tracker.timers.find((t) => t.id === meetingsId).running_since_ms, pressedAt, 'stamped at the click, not on arrival');
+  const afterAnswers = await shown('Meetings');
+  assert.ok(beforeAnswers >= 1400 && afterAnswers >= beforeAnswers, `Meetings never jumps back: ${beforeAnswers} ms, then ${afterAnswers} ms`);
+  await btn(page, 'Stop Meetings').click();
+  await btn(page, 'Clear Meetings').click();
+  await btn(page, 'Clear').click();
+  await btn(page, 'Start Meetings').waitFor();
+  await btn(page, 'Resume Deep work').click();
+  assert.equal(await page.locator('.tc.run').count(), 1, 'only Deep work runs');
   await btn(page, '+ Add timer').click();
   await text(page, '9 of 15 timers');
   await look(page, 'v7-open-day');
@@ -276,6 +355,7 @@ test('every view and transition on the board', async () => {
   await page.waitForTimeout(1100);
   await btn(page, 'Stop Meetings').click();
   await page.getByRole('button', { name: 'Clear Meetings' }).click();
+  assert.equal(await page.locator('.tc.run', { hasText: 'Meetings' }).count(), 0, 'the trash icon only clears');
   await btn(page, 'Clear').click();
   await btn(page, 'Start Meetings').waitFor();
   await btn(page, 'Start Email').click();
@@ -311,8 +391,14 @@ test('every view and transition on the board', async () => {
   await page.getByRole('link', { name: 'Charts' }).click();
   await page.waitForURL(/\/time-track\/workday\/charts$/);
   await text(page, 'Workday · charts');
-  assert.equal(await page.locator('.grow').count(), 8);
+  assert.equal(await page.locator('.grow').count(), 9, 'the Total graph, then one per timer');
+  assert.equal(await page.locator('.grow').first().getAttribute('class'), 'grow total');
+  assert.equal(await page.locator('.grow.total .gt').textContent(), 'Total · every timer');
   assert.equal(await page.locator('.rseg [aria-pressed="true"]').textContent(), '30 days');
+  // one saved day: a circle on it, and hovering shows its date and value
+  assert.equal(await page.locator('.grow.total .gdot').count(), 1);
+  await page.locator('.grow.total .plot').hover();
+  assert.match(await page.locator('.grow.total .gtip').textContent(), /^\w{3} \d{1,2} \w{3} · (\d+ h \d{2} m|\d+ m)$/);
   await text(page, 'a day, over 1 saved day in the last 30 days');
   await btn(page, 'All').click();
   await text(page, 'in all saved days');
@@ -362,6 +448,8 @@ test('every view and transition on the board', async () => {
   await text(page, 'Its saved days stay.');
   assert.equal(await page.locator('.tag.removed').count(), 1);
   await text(page, 'a day, over 2 saved days in the last 30 days');
+  // the two saved days are two days apart: the axis runs first to last, the unsaved date between draws nothing
+  assert.equal(await page.locator('.grow.total .gdot').count(), 2);
   await look(page, 'v11-charts');
 
   // ── 2 · Trackers list states, chart icon, Delete (after "Are you sure?") ──

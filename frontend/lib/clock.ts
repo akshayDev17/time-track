@@ -8,7 +8,7 @@
 export type Sample = { offset: number; rtt: number };
 
 export function sampleOf(nowMs: number, sentAt: number, receivedAt: number): Sample {
-  return { offset: nowMs - (sentAt + receivedAt) / 2, rtt: Math.max(0, receivedAt - sentAt) };
+  return { offset: Math.round(nowMs - (sentAt + receivedAt) / 2), rtt: Math.max(0, receivedAt - sentAt) };
 }
 
 /**

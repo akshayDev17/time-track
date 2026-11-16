@@ -73,9 +73,12 @@ export const saveDay = (slug: string) => request<TrackerResponse>('POST', `/trac
 export const discardDay = (slug: string) => request<TrackerResponse>('POST', `/trackers/${e(slug)}/discard-day`);
 
 export type TrackerAction = 'start-all' | 'stop-all' | 'relaunch' | 'clear-all';
-export const trackerAction = (slug: string, action: TrackerAction) => request<TrackerResponse>('POST', `/trackers/${e(slug)}/${action}`);
-export const timerAction = (slug: string, id: number, action: 'start' | 'stop' | 'clear') =>
-  request<TrackerResponse>('POST', `/trackers/${e(slug)}/timers/${id}/${action}`);
+/** A timer button's change, with when it was pressed on the server's clock (`pressedAt`): the
+ * server stamps it with that time, so a press sent after an earlier one's answer is not late. */
+export const trackerAction = (slug: string, action: TrackerAction, pressedAt: number) =>
+  request<TrackerResponse>('POST', `/trackers/${e(slug)}/${action}`, { pressed_at_ms: pressedAt });
+export const timerAction = (slug: string, id: number, action: 'start' | 'stop' | 'clear', pressedAt: number) =>
+  request<TrackerResponse>('POST', `/trackers/${e(slug)}/timers/${id}/${action}`, { pressed_at_ms: pressedAt });
 export const addTimer = (slug: string) => request<TrackerResponse>('POST', `/trackers/${e(slug)}/timers`);
 export const renameTimer = (slug: string, id: number, name: string) => request<TrackerResponse>('PATCH', `/trackers/${e(slug)}/timers/${id}`, { name });
 export const removeTimer = (slug: string, id: number) => request<TrackerResponse>('DELETE', `/trackers/${e(slug)}/timers/${id}`);
