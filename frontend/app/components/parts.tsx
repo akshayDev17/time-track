@@ -54,10 +54,9 @@ function Display({ timer, clock }: { timer: Timer; clock: () => number }) {
 /**
  * One timer card, as on the reference: number badge, display, one full-width button. Stopped
  * with time, the button is Resume and Clear is a small trash icon in the top corner, away
- * from it (answer 8). `live` works; `ended` leaves only a running timer's Stop (view 5b);
- * `grey` is look, not click. Clicking anywhere else on a card that works presses its button
- * (answer 11), and so do Enter and Space with the card focused; its own buttons and fields
- * only do their own thing.
+ * from it (answer 8). `live` works; `grey` is look, not click. Clicking anywhere else on a
+ * card that works presses its button (answer 11), and so do Enter and Space with the card
+ * focused; its own buttons and fields only do their own thing.
  */
 export function TimerCard({
   n, timer, mode, clock, onStart, onStop, onClear,
@@ -71,7 +70,7 @@ export function TimerCard({
   onClear: () => void;
 }) {
   const run = isRunning(timer);
-  const grey = mode === 'grey' || (mode === 'ended' && !run);
+  const grey = mode === 'grey';
   const hasTime = !run && elapsedAt(timer, clock()) > 0;
   const label = timer.name || `timer ${n}`;
   const verb = run ? 'Stop' : hasTime ? 'Resume' : 'Start';
@@ -123,7 +122,7 @@ export function ControlBar({
   return (
     <div className="cbar">
       <button type="button" className="btn ghost sm" disabled={!live} onClick={() => onAction('start-all')}>Start all</button>
-      <button type="button" className="btn ghost sm" disabled={!(live || (mode === 'ended' && running))} onClick={() => onAction('stop-all')}>Stop all</button>
+      <button type="button" className="btn ghost sm" disabled={!live} onClick={() => onAction('stop-all')}>Stop all</button>
       <button type="button" className="btn ghost sm" disabled={!live} onClick={() => onAction('relaunch')}>Relaunch</button>
       <button type="button" className="btn ghost sm dangertext" disabled={!(live && !running)} onClick={() => onAction('clear-all')}>Clear all</button>
       {live && running && <span className="cnote">Clear all waits until every timer is stopped.</span>}

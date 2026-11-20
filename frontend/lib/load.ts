@@ -15,6 +15,7 @@
 import { ApiError, isSignedOut } from './api.ts';
 import { applyTimers, type TimerAction } from './timers.ts';
 import type { Tracker } from './types.ts';
+import { settled } from './views.ts';
 
 export type Press = { id: number; action: TimerAction; at: number };
 
@@ -71,3 +72,11 @@ export function changeFailed(s: Load, id: number, e: unknown): Load {
 }
 
 export const dismissed = (s: Load): Load => ({ ...s, error: null, pollError: null });
+
+/** The open day's end has come (server time `nowMs`): it closed itself, so the page shows it
+ * saved, every timer at zero, at once; presses still on their way can no longer change it. */
+export function reachedEnd(s: Load, nowMs: number): Load {
+  if (!s.base) return s;
+  const base = settled(s.base, nowMs);
+  return base === s.base ? s : { ...s, base, pending: [], tracker: base };
+}

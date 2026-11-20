@@ -131,7 +131,9 @@ async function text(page, t) {
   }
 }
 const enabled = async (page, name) => btn(page, name).isEnabled();
-const why = (page, label) => page.locator('.dbtn', { has: page.getByRole('button', { name: label, exact: true }) }).locator('.why').textContent();
+/** A locator's text with its no-break spaces (kept-together times and durations) read as spaces. */
+const content = async (locator) => (await locator.textContent()).replace(/\u00a0/g, ' ');
+const why = (page, label) => content(page.locator('.dbtn', { has: page.getByRole('button', { name: label, exact: true }) }).locator('.why'));
 
 test('every view and transition on the board', async () => {
   const page = await newPage();
@@ -139,12 +141,14 @@ test('every view and transition on the board', async () => {
   // ── 1 · public page, signed out ────────────────────────────────────────────
   await page.goto(`${app}/time-track`);
   await text(page, 'Ten stopwatches you can use right now.');
+  assert.equal(await content(page.locator('.demo-day .pill')), 'No day open');
   assert.equal(await page.locator('.tc').count(), 10);
   assert.equal(await page.locator('.grow').count(), 10);
   assert.equal(await page.locator('.tag.sample').count(), 11);
   assert.equal(await page.locator('.sp-app[aria-current="page"] .sp-label').textContent(), 'Time Track');
   await btn(page, 'Start timer 1').click();
   await page.locator('.tc.run').first().waitFor();
+  assert.match(await content(page.locator('.demo-day .pill')), /^Day open · \d{1,2}:\d{2} [ap]m to \d{1,2}:\d{2} [ap]m \w{3} \d{1,2} \w{3} · 1 running$/);
   assert.equal(await enabled(page, 'Clear all'), false);
   await text(page, 'Clear all waits until every timer is stopped.');
   await page.waitForTimeout(1200);
@@ -215,11 +219,12 @@ test('every view and transition on the board', async () => {
 
   // ── 7 · today's open day ──────────────────────────────────────────────────
   await btn(page, 'Start today').click();
-  await text(page, 'Open day · today, ');
-  assert.match(await page.locator('.dayp .pill').textContent(), /^Open day · today, \w{3} \d{1,2} \w{3} \d{4} · started \d{1,2}:\d{2} [ap]m · Kolkata \(IST\)$/);
-  assert.match(await why(page, 'Save last day'), /^Unlocks when \w{3} \d{1,2} \w{3} ends in Kolkata \(IST\), in (\d+ h \d{2} m|\d+ m)\.$/);
-  assert.equal(await why(page, 'Start today'), 'Today already has its day. One day per date.');
-  assert.equal(await enabled(page, 'Start today'), false);
+  await text(page, 'Open day · ');
+  // the day ends 24 hours after it started: the same clock time, the next date
+  assert.match(await content(page.locator('.dayp .pill')), /^Open day · \w{3} \d{1,2} \w{3} \d{4} · (\d{1,2}:\d{2} [ap]m) to \1 \w{3} \d{1,2} \w{3} · Kolkata \(IST\)$/);
+  assert.match(await why(page, 'Save last day'), /^Saves itself at \d{1,2}:\d{2} [ap]m \w{3} \d{1,2} \w{3}, in (24 h 00 m|23 h \d{2} m)\.$/);
+  assert.match(await why(page, 'Start today'), /^Opens the next day once this one ends, in (24 h 00 m|23 h \d{2} m)\.$/);
+  assert.deepEqual([await enabled(page, 'Start today'), await enabled(page, 'Save last day'), await enabled(page, 'Discard last day')], [false, false, true]);
   for (const [i, name] of ['Deep work', 'Meetings', 'Email', 'Code review'].entries()) {
     await page.getByLabel(`Name for timer ${i + 1}`, { exact: true }).fill(name);
   }
@@ -254,13 +259,13 @@ test('every view and transition on the board', async () => {
     await route.fulfill({
       status: 409,
       headers: { 'access-control-allow-origin': app, 'access-control-allow-credentials': 'true', 'content-type': 'application/json' },
-      body: JSON.stringify({ error: 'This day has ended: only Stop and Stop all work.', code: 'day_ended' }),
+      body: JSON.stringify({ error: 'This day has ended and saved itself. Press Start today for the next one.', code: 'day_ended' }),
     });
   });
   await card('Meetings').click({ position: { x: 20, y: 60 } });
   await btn(page, 'Stop Meetings').waitFor({ timeout: 300 });
   await btn(page, 'Start Meetings').waitFor();
-  await text(page, 'This day has ended: only Stop and Stop all work.');
+  await text(page, 'This day has ended and saved itself. Press Start today for the next one.');
   await page.unroute(startUrl);
   // the browser logs that refused answer as a console error: the one this step asked for
   const refusedLog = errors.findIndex((e) => e.endsWith('the server responded with a status of 409 (Conflict)'));
@@ -360,31 +365,15 @@ test('every view and transition on the board', async () => {
   await btn(page, 'Start Meetings').waitFor();
   await btn(page, 'Start Email').click();
 
-  // ── the date ends where the day began → 5b, then 5 ────────────────────────
+  // ── its 24 hours are up → 10: Email (running) stopped at the end, saved, every timer zero ──
   await dev('/__dev/clock', { offset_ms: DAY });
-  await text(page, 'Last day not saved · ');
-  await text(page, 'is still running and counting into that day. Stop it before saving.');
-  assert.equal(await enabled(page, 'Save last day'), false);
-  assert.equal(await why(page, 'Save last day'), 'Stop all timers first: 1 still running.');
-  assert.equal(await btn(page, 'Stop Email').isEnabled(), true, 'only Stop works (5b)');
-  assert.equal(await enabled(page, 'Start all'), false);
-  assert.equal(await enabled(page, 'Stop all'), true);
-  await look(page, 'v5b-timer-left-running');
-  await btn(page, 'Start today').click();
-  await text(page, 'Your last day isn’t saved');
-  assert.equal(await enabled(page, 'Save it first'), false);
-  await text(page, 'Stop all timers first: 1 still running on that day.');
-  await page.locator('.dlg').getByRole('button', { name: 'Cancel' }).click();
-  await btn(page, 'Stop all').click();
-  await text(page, 'has ended. Save it to keep it in History and on the Charts page, or discard it.');
-  assert.deepEqual([await enabled(page, 'Start today'), await enabled(page, 'Save last day'), await enabled(page, 'Discard last day')], [true, true, true]);
-  await look(page, 'v5-unsaved-earlier-day');
-
-  // ── Save last day → 10 ────────────────────────────────────────────────────
-  await btn(page, 'Save last day').click();
-  await text(page, ' · read-only');
-  await text(page, 'Saved to History and shown on the Charts page.');
+  await text(page, 'and saved to History and the Charts page. Every timer is back at zero: press Start today to begin the next day.');
+  assert.match(await content(page.locator('.dayp .pill')), /^Saved · \w{3} \d{1,2} \w{3} \d{4}$/);
+  assert.equal(await page.locator('.tc.run').count(), 0);
+  assert.equal(await page.locator('.tc-clear').count(), 0, 'every timer back at zero');
   assert.equal(await page.locator('.tc.grey').count(), 8);
+  assert.deepEqual([await enabled(page, 'Start today'), await enabled(page, 'Save last day'), await enabled(page, 'Discard last day')], [true, false, false]);
+  assert.equal(await why(page, 'Save last day'), 'Already saved.');
   await look(page, 'v10-saved-day');
 
   // ── 11 · Charts page ──────────────────────────────────────────────────────
@@ -406,41 +395,29 @@ test('every view and transition on the board', async () => {
 
   // ── Start today from a saved day → 7 at zero; remove a saved timer (A3) ───
   await btn(page, 'Start today').click();
-  await text(page, 'Open day · today, ');
+  await text(page, 'Open day · ');
   assert.equal(await page.locator('.tc-clear').count(), 0, 'every timer back to zero');
   await page.locator('.rn-f', { has: page.getByLabel('Name for timer 4', { exact: true }) }).getByRole('button', { name: 'Remove' }).click();
   await text(page, 'Code review leaves this tracker.');
   await page.locator('.dlg').getByRole('button', { name: 'Remove timer' }).click();
   await text(page, '7 of 15 timers');
 
-  // ── rollover → 5 → Start today → 6 prompt: Cancel, then Discard it (C3) ───
-  await dev('/__dev/clock', { offset_ms: 2 * DAY });
-  await text(page, 'Last day not saved · ');
-  await btn(page, 'Start today').click();
-  await text(page, 'Your last day isn’t saved');
-  await look(page, 'v6-start-today-prompt');
-  await page.locator('.dlg').getByRole('button', { name: 'Cancel' }).click();
-  await btn(page, 'Start today').click();
-  await btn(page, 'Discard it').click();
+  // ── Discard last day, before the day ends → 4 (C1) ───────────────────────
+  await btn(page, 'Discard last day').click();
   await text(page, 'is deleted for good. It never reaches History or the Charts page.');
   await look(page, 'v9-dialog-discard');
   await page.locator('.dlg').getByRole('button', { name: 'Discard last day' }).click();
-  await text(page, 'Open day · today, ');
-
-  // ── rollover → Save it first from the prompt → 7 on the next date ─────────
-  await dev('/__dev/clock', { offset_ms: 3 * DAY });
-  await text(page, 'Last day not saved · ');
-  await btn(page, 'Start today').click();
-  await btn(page, 'Save it first').click();
-  await text(page, 'Open day · today, ');
-
-  // ── rollover → Discard last day → 4 (after discard) ───────────────────────
-  await dev('/__dev/clock', { offset_ms: 4 * DAY });
-  await text(page, 'Last day not saved · ');
-  await btn(page, 'Discard last day').click();
-  await page.locator('.dlg').getByRole('button', { name: 'Discard last day' }).click();
   await text(page, 'The last day was discarded. Press Start today to begin a new day.');
   await text(page, 'No open day');
+
+  // ── a discarded date was never saved: Start today opens it again; its 24 hours end → 10 ──
+  await btn(page, 'Start today').click();
+  await text(page, 'Open day · ');
+  await btn(page, 'Start Deep work').click();
+  await page.locator('.tc.run').first().waitFor();
+  await dev('/__dev/clock', { offset_ms: 3 * DAY });
+  await text(page, 'Every timer is back at zero: press Start today to begin the next day.');
+  assert.equal(await page.locator('.tc.run').count(), 0);
 
   // charts: two saved days, the removed timer kept and marked
   await page.getByRole('link', { name: 'Charts' }).click();
@@ -448,14 +425,13 @@ test('every view and transition on the board', async () => {
   await text(page, 'Its saved days stay.');
   assert.equal(await page.locator('.tag.removed').count(), 1);
   await text(page, 'a day, over 2 saved days in the last 30 days');
-  // the two saved days are two days apart: the axis runs first to last, the unsaved date between draws nothing
   assert.equal(await page.locator('.grow.total .gdot').count(), 2);
   await look(page, 'v11-charts');
 
   // ── 2 · Trackers list states, chart icon, Delete (after "Are you sure?") ──
   await page.locator('.sp-trail').getByRole('link', { name: 'Trackers' }).click();
   await text(page, 'Your trackers');
-  await text(page, 'No open day');
+  assert.match(await content(page.locator('.trk', { hasText: 'Workday' }).locator('.pill')), /^Saved · \w{3} \d{1,2} \w{3}$/);
   await page.getByRole('link', { name: 'New tracker' }).click();
   await page.getByLabel('Name', { exact: true }).fill('Reading');
   await btn(page, 'Create tracker').click();
@@ -477,6 +453,99 @@ test('every view and transition on the board', async () => {
   await btn(page, 'Sign out').click();
   await text(page, 'Ten stopwatches you can use right now.');
 
+  await page.context().close();
+  assert.deepEqual(errors, []);
+});
+
+/** Move the API's clock so that it reads `ms` (the page syncs to it from every answer). */
+async function serverAt(ms) {
+  const { now_ms: real } = await dev('/__dev/clock', { offset_ms: 0 });
+  await dev('/__dev/clock', { offset_ms: ms - real });
+}
+
+test('a day lasts 24 hours from its start, whatever the clock read, then closes and saves itself', async () => {
+  // Start today at 11:59 pm: the day used to end at midnight, a minute later, and stay open
+  // with its timers counting until someone saved it by hand.
+  const START = Date.parse('2026-11-20T23:59:00+05:30');
+  await dev('/__dev/session', { signed_in: true });
+  await serverAt(START);
+  const page = await newPage();
+  await page.goto(`${app}/time-track/new`);
+  await page.getByLabel('Name', { exact: true }).fill('Late night');
+  await btn(page, 'Create tracker').click();
+  await page.waitForURL(/\/time-track\/late-night$/);
+  await btn(page, 'Start today').click();
+  await text(page, 'Open day · ');
+  await page.getByLabel('Name for timer 1', { exact: true }).fill('Deep work');
+  await page.getByLabel('Name for timer 1', { exact: true }).blur();
+  await btn(page, 'Start Deep work').click();
+  const pill = 'Open day · Fri 20 Nov 2026 · 11:59 pm to 11:59 pm Sat 21 Nov · Kolkata (IST) · 1 running';
+  await text(page, pill);
+  await look(page, 'v7-open-day-from-2359');
+
+  // past midnight: the same day, still open, Deep work still running
+  const answered = () => page.waitForResponse((r) => r.url() === `${api}/time-track/api/trackers/late-night` && r.request().method() === 'GET');
+  await serverAt(START + 2 * 60000);
+  await answered();
+  await page.waitForTimeout(200);
+  assert.equal(await content(page.locator('.dayp .pill')), pill);
+  assert.equal(await page.locator('.tc.run').count(), 1);
+
+  // four seconds before the end: the page has the server's clock, then hears nothing more, so
+  // what follows is the open tab's own doing, at the end moment, without a reload
+  await serverAt(START + 24 * 3600000 - 4000);
+  await answered();
+  let release;
+  const held = new Promise((r) => (release = r));
+  await page.route(`${api}/time-track/api/trackers/late-night`, async (route) => {
+    await held;
+    await route.continue();
+  });
+  await text(page, 'Ended at 11:59 pm Sat 21 Nov and saved to History and the Charts page.');
+  assert.equal(await content(page.locator('.dayp .pill')), 'Saved · Fri 20 Nov 2026');
+  assert.equal(await page.locator('.tc.run').count(), 0);
+  assert.equal(await page.locator('.tc-clear').count(), 0, 'every timer back at zero');
+  assert.equal(await page.locator('.tc.grey').count(), 10);
+  await look(page, 'v10-saved-at-24h');
+  const heard = answered();
+  release();
+  await heard;
+  await page.unroute(`${api}/time-track/api/trackers/late-night`);
+
+  // the server agrees: on its next request it closed the day at its end
+  await page.reload();
+  await text(page, 'Ended at 11:59 pm Sat 21 Nov and saved to History and the Charts page.');
+  assert.equal(await page.locator('.tc-clear').count(), 0);
+  await page.getByRole('link', { name: 'Charts' }).click();
+  await text(page, 'Late night · charts');
+  await page.locator('.grow.total .plot').hover();
+  assert.equal(await page.locator('.grow.total .gtip').textContent(), 'Fri 20 Nov · 24 h 00 m', 'Deep work counted up to the end, not past it');
+  await page.context().close();
+  await dev('/__dev/session', { signed_in: false });
+  assert.deepEqual(errors, []);
+});
+
+test('the public demo keeps the same rule: 24 hours from its first start, then saved here and back to zero', async () => {
+  const page = await newPage();
+  await page.clock.install({ time: new Date('2026-11-20T23:59:00+05:30') });
+  await page.goto(`${app}/time-track`);
+  await text(page, 'Ten stopwatches you can use right now.');
+  await btn(page, 'Start timer 1').click();
+  await page.locator('.tc.run').first().waitFor();
+  assert.equal(await content(page.locator('.demo-day .pill')), 'Day open · 11:59 pm to 11:59 pm Sat 21 Nov · 1 running');
+  await page.clock.fastForward(2 * 60000);
+  assert.equal(await page.locator('.tc.run').count(), 1, 'still running past midnight');
+  await page.clock.fastForward(24 * 3600000 - 2 * 60000);
+  await text(page, 'Saved · Fri 20 Nov · 24 h 00 m in all');
+  await text(page, 'That day ran from 11:59 pm Fri 20 Nov to 11:59 pm Sat 21 Nov. Every timer is back at zero: your next Start opens a new day.');
+  assert.equal(await page.locator('.tc.run').count(), 0);
+  assert.equal(await page.locator('.tc-clear').count(), 0, 'every timer back at zero');
+  await look(page, 'v1-public-day-saved');
+  // a tab opened hours later sees the same
+  await page.clock.fastForward(5 * 3600000);
+  await page.reload();
+  await text(page, 'Saved · Fri 20 Nov · 24 h 00 m in all');
+  assert.equal(await page.locator('.tc-clear').count(), 0);
   await page.context().close();
   assert.deepEqual(errors, []);
 });

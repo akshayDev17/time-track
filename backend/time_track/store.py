@@ -4,6 +4,10 @@ Reads return plain dicts. Writes that must land together come back as statement 
 one ``db.batch`` (one transaction). Every tracker read is scoped by ``user_id``. Each D1 call
 is a round trip to the database, so the tracker page's state is read in one batch
 (``read_state``), together with the write a timer button makes.
+
+Every read of a tracker first closes its day if the day's window has ended
+(``close_ended_days``), in the same batch, so no request ever sees or changes a day past its
+end: what the day saved does not depend on any tab being open when it ended.
 """
 
 from __future__ import annotations
@@ -29,12 +33,13 @@ async def upsert_user(db, email: str, now_ms: int) -> int:
     return row["id"]
 
 
-async def tracker_summaries(db, user_id: int) -> list[dict]:
-    """One row per tracker, oldest first, with what its list row shows."""
-    return (await db.prepare(
+async def tracker_summaries(db, user_id: int, now_ms: int) -> list[dict]:
+    """One row per tracker, oldest first, with what its list row shows, after closing every
+    one of the user's days that has ended."""
+    results = await db.batch([*close_ended_days(db, _USER_TRACKERS, (user_id,), now_ms), db.prepare(
         """SELECT tr.id, tr.slug, tr.name, tr.last_outcome,
                   (SELECT COUNT(*) FROM timers t WHERE t.tracker_id = tr.id AND t.removed_on IS NULL) AS timer_count,
-                  od.date AS open_date, od.day_end_ms AS open_end_ms,
+                  od.date AS open_date, od.tz AS open_tz, od.day_end_ms AS open_end_ms,
                   (SELECT COUNT(*) FROM open_day_timers o
                      WHERE o.tracker_id = tr.id AND o.running_since_ms IS NOT NULL) AS running,
                   (SELECT h.date FROM history_days h WHERE h.tracker_id = tr.id
@@ -42,7 +47,8 @@ async def tracker_summaries(db, user_id: int) -> list[dict]:
              FROM trackers tr LEFT JOIN open_days od ON od.tracker_id = tr.id
             WHERE tr.user_id = ?
             ORDER BY tr.created_at_ms, tr.id"""
-    ).bind(user_id).all()).results
+    ).bind(user_id)])
+    return _rows(list(results)[-1])
 
 
 async def taken_slugs(db, user_id: int) -> set[str]:
@@ -73,6 +79,7 @@ async def delete_tracker(db, tracker_id: int) -> None:
 
 
 _ID = "(SELECT id FROM trackers WHERE user_id = ? AND slug = ?)"
+_USER_TRACKERS = "(SELECT id FROM trackers WHERE user_id = ?)"
 _LATEST_SAVED = f"(SELECT id FROM history_days WHERE tracker_id = {_ID} ORDER BY saved_at_ms DESC, id DESC LIMIT 1)"
 
 
@@ -103,11 +110,12 @@ def _rows(result) -> list[dict]:
     return list(result.results or [])
 
 
-async def read_state(db, user_id: int, slug: str, writes: list = ()) -> dict | None:
-    """The tracker's state after ``writes``, in one round trip: ``writes`` and the reads run as
-    one batch (one transaction), so what is read is exactly what the writes left. ``None``
-    when the user has no such tracker (the writes, scoped the same way, then touched nothing)."""
-    writes = list(writes)
+async def read_state(db, user_id: int, slug: str, now_ms: int, writes: list = ()) -> dict | None:
+    """The tracker's state after closing its day if that has ended, then ``writes``, in one
+    round trip: all of it and the reads run as one batch (one transaction), so what is read is
+    exactly what the writes left. ``None`` when the user has no such tracker (the writes,
+    scoped the same way, then touched nothing)."""
+    writes = [*close_ended_days(db, _ID, (user_id, slug), now_ms), *writes]
     results = await db.batch([*writes, *_state_reads(db, user_id, slug)])
     tracker, day, timers, saved, values = (_rows(r) for r in list(results)[len(writes):])
     if not tracker:
@@ -119,6 +127,11 @@ async def read_state(db, user_id: int, slug: str, writes: list = ()) -> dict | N
 async def has_saved_date(db, tracker_id: int, date: str) -> bool:
     row = await db.prepare("SELECT 1 AS hit FROM history_days WHERE tracker_id = ? AND date = ?").bind(tracker_id, date).first()
     return row is not None
+
+
+async def close_ended_day(db, user_id: int, slug: str, now_ms: int) -> None:
+    """Close the tracker's day if it has ended (``close_ended_days``), on its own."""
+    await db.batch(close_ended_days(db, _ID, (user_id, slug), now_ms))
 
 
 async def history(db, tracker_id: int) -> tuple[list[dict], list[dict], list[dict]]:
@@ -142,47 +155,60 @@ async def history(db, tracker_id: int) -> tuple[list[dict], list[dict], list[dic
 
 # ── day writes, as statement lists for one batch ─────────────────────────────
 
-def save_day_statements(db, tracker_id: int, date: str, now_ms: int) -> list:
-    """Move the open day of ``date`` into History. A timer still running is saved with its
-    time up to now, so a run started between the check and this batch is never lost. When
-    another request has already replaced that day, nothing changes."""
+def close_ended_days(db, trackers: str, params: tuple, now_ms: int) -> list:
+    """Close every open day of ``trackers`` (an SQL list of tracker ids over ``params``) whose
+    window has ended by ``now_ms``, exactly as it stood at its end: each running timer is
+    stopped at ``day_end_ms`` (no time counts past it), the day and every current timer's time
+    go into History (saved at ``day_end_ms``), and the open day is deleted, so the tracker
+    shows every timer at zero until the next Start today.
+
+    Every statement is guarded by the day having ended, and the batch is one transaction, so
+    this is idempotent: a request that arrives after another closed the day changes nothing.
+    One saved day per date: a date already in History is never saved twice (Start today refuses
+    such a date, so only a race could open one), and that day's values are matched by its
+    start too, so they can never land on another day of the same date.
+    """
+    ended = f"d.tracker_id IN {trackers} AND d.day_end_ms <= ?"
     return [
         db.prepare(
-            """INSERT INTO history_days (tracker_id, date, tz, tz_label, day_start_ms, day_end_ms, started_at_ms, saved_at_ms)
-               SELECT tracker_id, date, tz, tz_label, day_start_ms, day_end_ms, started_at_ms, ?
-                 FROM open_days WHERE tracker_id = ? AND date = ?"""
-        ).bind(now_ms, tracker_id, date),
+            f"""INSERT INTO history_days (tracker_id, date, tz, tz_label, day_start_ms, day_end_ms, started_at_ms, saved_at_ms)
+                SELECT d.tracker_id, d.date, d.tz, d.tz_label, d.day_start_ms, d.day_end_ms, d.started_at_ms, d.day_end_ms
+                  FROM open_days d
+                 WHERE {ended}
+                   AND NOT EXISTS (SELECT 1 FROM history_days h WHERE h.tracker_id = d.tracker_id AND h.date = d.date)"""
+        ).bind(*params, now_ms),
         db.prepare(
-            """INSERT INTO history_values (day_id, timer_id, ms)
-               SELECT h.id, o.timer_id,
-                      o.acc_ms + CASE WHEN o.running_since_ms IS NULL THEN 0 ELSE MAX(0, ? - o.running_since_ms) END
-                 FROM open_day_timers o
-                 JOIN open_days d ON d.tracker_id = o.tracker_id
-                 JOIN history_days h ON h.tracker_id = d.tracker_id AND h.date = d.date
-                 JOIN timers t ON t.id = o.timer_id AND t.removed_on IS NULL
-                WHERE o.tracker_id = ? AND d.date = ?"""
-        ).bind(now_ms, tracker_id, date),
-        *_close_day_statements(db, tracker_id, date, "saved"),
+            f"""INSERT INTO history_values (day_id, timer_id, ms)
+                SELECT h.id, o.timer_id,
+                       o.acc_ms + CASE WHEN o.running_since_ms IS NULL THEN 0
+                                       ELSE MAX(0, d.day_end_ms - o.running_since_ms) END
+                  FROM open_days d
+                  JOIN open_day_timers o ON o.tracker_id = d.tracker_id
+                  JOIN history_days h ON h.tracker_id = d.tracker_id AND h.date = d.date AND h.started_at_ms = d.started_at_ms
+                  JOIN timers t ON t.id = o.timer_id AND t.removed_on IS NULL
+                 WHERE {ended}"""
+        ).bind(*params, now_ms),
+        db.prepare(
+            f"UPDATE trackers SET last_outcome = 'saved' WHERE id IN (SELECT d.tracker_id FROM open_days d WHERE {ended})"
+        ).bind(*params, now_ms),
+        db.prepare(f"DELETE FROM open_days WHERE tracker_id IN {trackers} AND day_end_ms <= ?").bind(*params, now_ms),
     ]
 
 
-def discard_day_statements(db, tracker_id: int, date: str) -> list:
-    """Delete the open day of ``date`` completely: its times never reach History."""
-    return _close_day_statements(db, tracker_id, date, "discarded")
-
-
-def _close_day_statements(db, tracker_id: int, date: str, outcome: str) -> list:
+def discard_day_statements(db, tracker_id: int, started_at_ms: int) -> list:
+    """Delete the open day that started at ``started_at_ms`` completely: its times never reach
+    History. When another request has already closed or replaced that day, nothing changes."""
     return [
         db.prepare(
-            "UPDATE trackers SET last_outcome = ? WHERE id = ? "
-            "AND EXISTS (SELECT 1 FROM open_days WHERE tracker_id = ? AND date = ?)"
-        ).bind(outcome, tracker_id, tracker_id, date),
-        db.prepare("DELETE FROM open_days WHERE tracker_id = ? AND date = ?").bind(tracker_id, date),
+            "UPDATE trackers SET last_outcome = 'discarded' WHERE id = ? "
+            "AND EXISTS (SELECT 1 FROM open_days WHERE tracker_id = ? AND started_at_ms = ?)"
+        ).bind(tracker_id, tracker_id, started_at_ms),
+        db.prepare("DELETE FROM open_days WHERE tracker_id = ? AND started_at_ms = ?").bind(tracker_id, started_at_ms),
     ]
 
 
 def start_day_statements(db, tracker_id: int, stamp: dict, now_ms: int) -> list:
-    """Open today's day with every current timer at zero."""
+    """Open today's day, for the window ``stamp`` carries, with every current timer at zero."""
     return [
         db.prepare(
             """INSERT INTO open_days (tracker_id, date, tz, tz_label, day_start_ms, day_end_ms, started_at_ms)
@@ -199,15 +225,18 @@ def start_day_statements(db, tracker_id: int, stamp: dict, now_ms: int) -> list:
 # ── timer writes, one statement each for ``read_state`` ─────────────────────
 #
 # Each is scoped by (user, slug) and guarded in SQL, so it changes nothing unless the rule
-# holds at the moment it runs: a timer starts only while its day is live (the date has not
-# ended where it began), and Stop works on any open day. Each is stamped with ``at``, the
-# press time (``rules.press_time``), on every timer whose last change (``changed_at_ms``)
-# is not later than it, and with the server's clock on any other.
+# holds at the moment it runs: a timer starts only while its day is live (its window has not
+# ended). Each is stamped with ``at``, the press time (``rules.press_time``), on every timer
+# whose last change (``changed_at_ms``) is not later than it, and with the server's clock on
+# any other; a Stop never counts past the day's end.
 
 _LIVE_DAY = "EXISTS (SELECT 1 FROM open_days d WHERE d.tracker_id = open_day_timers.tracker_id AND ? < d.day_end_ms)"
 _AT = "(CASE WHEN changed_at_ms <= ? THEN ? ELSE ? END)"
 _START = f"running_since_ms = {_AT}, changed_at_ms = {_AT}"
-_STOP = f"acc_ms = acc_ms + MAX(0, {_AT} - running_since_ms), running_since_ms = NULL, changed_at_ms = {_AT}"
+_DAY_END = "(SELECT d.day_end_ms FROM open_days d WHERE d.tracker_id = open_day_timers.tracker_id)"
+_STOP = (
+    f"acc_ms = acc_ms + MAX(0, MIN({_AT}, {_DAY_END}) - running_since_ms), running_since_ms = NULL, changed_at_ms = {_AT}"
+)
 _CLEAR = f"acc_ms = 0, changed_at_ms = {_AT}"
 
 

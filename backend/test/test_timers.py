@@ -147,8 +147,7 @@ def test_removed_timer_keeps_its_saved_days_and_is_marked_removed():
     c.ok("POST", f"/trackers/{slug}/timers/{ids[1]}/start")
     c.advance(20 * MINUTE)
     c.ok("POST", f"/trackers/{slug}/stop-all")
-    c.now = at(PUNE, "2026-11-16T08:00")
-    c.ok("POST", f"/trackers/{slug}/save-day")
+    c.now = at(PUNE, "2026-11-16T09:30")  # past its end (09:02): saved by the next request
     c.start_today(slug, "2026-11-16")
     c.ok("POST", f"/trackers/{slug}/timers/{ids[1]}/start")
     c.advance(5 * MINUTE)
@@ -157,9 +156,8 @@ def test_removed_timer_keeps_its_saved_days_and_is_marked_removed():
     h = c.history(slug)
     assert h["timers"][1] == {"id": ids[1], "name": "", "number": None, "removed_on": "2026-11-16"}
     assert h["days"][0]["values"][str(ids[1])] == 20 * MINUTE
-    # the next save no longer includes it, and its time today was not kept
-    c.now = at(PUNE, "2026-11-17T08:00")
-    c.ok("POST", f"/trackers/{slug}/save-day")
+    # the next saved day no longer includes it, and its time today was not kept
+    c.now = at(PUNE, "2026-11-17T10:00")
     assert str(ids[1]) not in c.history(slug)["days"][1]["values"]
 
 
@@ -233,7 +231,7 @@ def test_a_refused_start_writes_nothing():
     slug = c.new_tracker("Workday", 2)
     c.start_today(slug)
     ids = c.timer_ids(slug)
-    c.advance(2 * MINUTE)  # the date has ended where the day began
+    c.advance(24 * 60 * MINUTE)  # the day's 24 hours are up: it saved itself
     status, body = c.call("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
     assert (status, body["code"]) == (409, "day_ended")
     assert c.call("POST", f"/trackers/{slug}/start-all")[1]["code"] == "day_ended"

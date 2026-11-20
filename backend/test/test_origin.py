@@ -28,8 +28,7 @@ def test_a_change_from_another_site_is_refused_and_changes_nothing():
         for method, path, body in (
             ("POST", "/trackers", {"name": "Planted", "timers": 1}),
             ("DELETE", f"/trackers/{slug}", None),
-            ("POST", f"/trackers/{slug}/start-today", {"last_day": "discard"}),
-            ("POST", f"/trackers/{slug}/save-day", None),
+            ("POST", f"/trackers/{slug}/start-today", None),
             ("POST", f"/trackers/{slug}/discard-day", None),
             ("POST", f"/trackers/{slug}/start-all", None),
             ("POST", f"/trackers/{slug}/stop-all", None),

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getTracker, ApiError } from '../../lib/api';
 import { serverNow } from '../../lib/clock';
-import { LOADING, changed, changeFailed, dismissed, pollFailed, polled, pressed, type Load } from '../../lib/load';
+import { LOADING, changed, changeFailed, dismissed, pollFailed, polled, pressed, reachedEnd, type Load } from '../../lib/load';
 import type { TimerAction } from '../../lib/timers';
 import type { TrackerResponse } from '../../lib/types';
 
@@ -18,7 +18,8 @@ const CHANNEL = 'time-track';
  * `call` gets the press time on the server's clock, for the server to stamp the change with.
  * Given the timer action it makes, the press shows at once at that time (lib/load.ts), and
  * snaps back if the server refuses it. Changes go one at a time, in the order pressed, so
- * each answer holds every earlier press.
+ * each answer holds every earlier press. At the open day's end the page shows it closed and
+ * saved at once, and asks the server, which closes it on that request.
  *
  * `slug` is undefined until the page has read its URL (nothing is known yet, nothing is
  * asked) and null when the URL names no tracker (missing, without asking).
@@ -93,6 +94,16 @@ export function useTracker(slug: string | null | undefined) {
       channel.current?.close();
     };
   }, [slug, load]);
+
+  const end = state.base?.open_day?.day_end_ms;
+  useEffect(() => {
+    if (end === undefined) return;
+    const atEnd = setTimeout(() => {
+      setState((s) => reachedEnd(s, serverNow()));
+      load();
+    }, Math.max(0, end - serverNow() + 5));
+    return () => clearTimeout(atEnd);
+  }, [end, load]);
 
   const clearError = useCallback(() => setState(dismissed), []);
   return {

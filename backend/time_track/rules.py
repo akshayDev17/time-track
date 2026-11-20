@@ -2,8 +2,10 @@
 
 Times are epoch milliseconds from the server's clock. A Day is stamped with the date and
 time zone where Start today was pressed (the browser reads both from its own zone data and
-sends them, with the server times that date starts and ends there), and its Save last day
-unlocks once the server clock passes the day's end, on any device.
+sends them, with the server times that date starts and ends there, so the server can check
+the date is today). The day itself is a window of exactly 24 hours from the moment Start
+today reached the server, whatever the clock read then: [start, start + DAY_MS). When the
+server clock reaches its end, the day closes itself (``store.close_ended_days``).
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ TZ_LABEL_MAX = 80
 UNTITLED = "Untitled tracker"
 
 HOUR_MS = 3_600_000
+#: A day's window: it ends exactly this long after it started, whatever the date or zone.
+DAY_MS = 24 * HOUR_MS
 #: A calendar day is 24 h, or 23 h / 25 h (and 23.5 h / 24.5 h on Lord Howe) across a DST change.
 MIN_DAY_MS = 22 * HOUR_MS
 MAX_DAY_MS = 26 * HOUR_MS
@@ -36,17 +40,14 @@ RESERVED_SLUGS = frozenset({"api", "new", "signin", "tracker", "charts", "index"
 SLUG_MAX = 40
 
 LIVE = "live"
-ENDED = "ended"
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def day_phase(open_day: dict | None, now_ms: int) -> str | None:
-    """``live`` while the open day's date has not ended in its zone, ``ended`` after, ``None``
-    when no day is open."""
-    if open_day is None:
-        return None
-    return LIVE if now_ms < open_day["day_end_ms"] else ENDED
+    """``live`` while the open day's window has not ended, else ``None``. Every read closes an
+    ended day first, so an open day the store answers with is always live."""
+    return LIVE if open_day is not None and now_ms < open_day["day_end_ms"] else None
 
 
 def elapsed_ms(acc_ms: int, running_since_ms: int | None, now_ms: int) -> int:
@@ -112,11 +113,13 @@ def _text(body: dict, key: str, limit: int) -> str:
 
 
 def day_stamp(body: dict, now_ms: int) -> dict:
-    """The Start today stamp, checked against the server clock.
+    """The Start today stamp, checked against the server clock, and the day's window.
 
     ``date`` is the local calendar date, ``tz`` the IANA zone and ``tz_label`` how pages name
-    it ("Pune (IST)"); ``day_start_ms`` / ``day_end_ms`` are when that date starts and ends in
-    that zone. Now must fall inside the day, so a day is always today's where it started.
+    it ("Pune (IST)"); the body's ``day_start_ms`` / ``day_end_ms`` are when that date starts
+    and ends in that zone, and now must fall inside them, so a day is always today's where it
+    started. The answer's ``day_start_ms`` / ``day_end_ms`` are the day's window instead:
+    now, and exactly ``DAY_MS`` later.
     """
     date = body.get("date")
     if not isinstance(date, str) or not _DATE.match(date):
@@ -132,7 +135,7 @@ def day_stamp(body: dict, now_ms: int) -> dict:
         raise Invalid("day_start_ms and day_end_ms must span one calendar day")
     if not (start - SKEW_MS <= now_ms < end):
         raise Invalid("That date is not today where you are. Reload the page and press Start today again.", "date_not_today")
-    return {"date": date, "tz": tz, "tz_label": tz_label, "day_start_ms": start, "day_end_ms": end}
+    return {"date": date, "tz": tz, "tz_label": tz_label, "day_start_ms": now_ms, "day_end_ms": now_ms + DAY_MS}
 
 
 def press_time(body: dict, now_ms: int) -> int:
@@ -143,14 +146,3 @@ def press_time(body: dict, now_ms: int) -> int:
     if isinstance(value, int) and not isinstance(value, bool) and now_ms - PRESS_MAX_AGE_MS <= value <= now_ms + PRESS_SKEW_MS:
         return value
     return now_ms
-
-
-def last_day_choice(body: dict) -> str | None:
-    """What to do with an unsaved earlier day before today starts: ``save``, ``discard`` or
-    ``None`` (ask)."""
-    choice = body.get("last_day")
-    if choice is None:
-        return None
-    if choice not in ("save", "discard"):
-        raise Invalid("last_day must be save or discard")
-    return choice

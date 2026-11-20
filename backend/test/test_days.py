@@ -1,20 +1,33 @@
-"""Days: Start today, one day per date, Save last day, Discard last day (answers 1-6, B, C, E)."""
+"""Days: Start today opens a window of exactly 24 hours from its start; at its end the day closes
+itself (every running timer stops at the end, the day is saved, the timers show zero), on
+whichever request comes next; Discard last day before then; one day per date."""
 
-from helpers import HOUR, MINUTE, PUNE, Client, at, elapsed, stamp
+import sqlite3
+from pathlib import Path
+
+from helpers import HOUR, MIGRATIONS, MINUTE, PUNE, Client, at, elapsed, stamp
+
+from time_track.sqlite_binding import SqliteD1
 
 AUCKLAND = "Pacific/Auckland"
 SF = "America/Los_Angeles"
+LONDON = "Europe/London"
+DAY = 24 * HOUR
 
 
-def started(timers=3, name="Workday", now=None):
+def started(timers=3, name="Workday", now=None, day="2026-11-15", tz=PUNE):
     c = Client(now_ms=now)
     slug = c.new_tracker(name, timers)
-    status, body = c.start_today(slug)
+    status, body = c.start_today(slug, day, tz)
     assert status == 200, body
     return c, slug
 
 
-# ── Start today ──────────────────────────────────────────────────────────────
+def rows(c, table):
+    return c.db.prepare(f"SELECT COUNT(*) AS n FROM {table}").bind()._execute()[0]["n"]
+
+
+# ── Start today: a 24-hour window from its start ─────────────────────────────
 
 def test_brand_new_tracker_has_no_day_and_zero_timers():
     c = Client()
@@ -23,35 +36,93 @@ def test_brand_new_tracker_has_no_day_and_zero_timers():
     assert [x["acc_ms"] for x in t["timers"]] == [0, 0, 0]
 
 
-def test_start_today_opens_a_day_stamped_with_date_zone_and_server_start():
+def test_start_today_opens_a_day_stamped_with_date_and_zone_ending_24_hours_after_it_started():
     c, slug = started()
     t = c.tracker(slug)
     assert t["phase"] == "live"
     day = t["open_day"]
     assert (day["date"], day["tz"], day["tz_label"]) == ("2026-11-15", PUNE, "Pune (IST)")
-    assert day["started_at_ms"] == c.now
-    assert day["day_end_ms"] == at(PUNE, "2026-11-16T00:00")
+    assert day["started_at_ms"] == day["day_start_ms"] == c.now
+    assert day["day_end_ms"] == c.now + DAY == at(PUNE, "2026-11-16T09:02")
     assert all(x["acc_ms"] == 0 and x["running_since_ms"] is None for x in t["timers"])
 
 
-def test_one_day_per_date_start_today_refused_while_todays_day_is_open():
-    c, slug = started()
-    status, body = c.start_today(slug)
+def test_a_day_started_at_2359_ends_at_2359_the_next_day_not_at_midnight():
+    c, slug = started(now=at(PUNE, "2026-11-15T23:59"))
+    assert c.tracker(slug)["open_day"]["day_end_ms"] == at(PUNE, "2026-11-16T23:59")
+    ids = c.timer_ids(slug)
+    c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
+    c.now = at(PUNE, "2026-11-16T00:01")  # past the date's midnight: still the same, live day
+    t = c.tracker(slug)
+    assert t["phase"] == "live" and t["open_day"]["date"] == "2026-11-15"
+    c.ok("POST", f"/trackers/{slug}/timers/{ids[1]}/start")
+    c.now = at(PUNE, "2026-11-16T23:58")
+    assert c.tracker(slug)["phase"] == "live"
+
+
+def test_a_day_started_at_midnight_ends_at_the_next_midnight():
+    c, slug = started(now=at(PUNE, "2026-11-15T00:00"))
+    assert c.tracker(slug)["open_day"]["day_end_ms"] == at(PUNE, "2026-11-16T00:00")
+    c.now = at(PUNE, "2026-11-16T00:00") - 1
+    assert c.tracker(slug)["phase"] == "live"
+    c.now = at(PUNE, "2026-11-16T00:00")
+    t = c.tracker(slug)
+    assert t["open_day"] is None and t["last_outcome"] == "saved"
+
+
+def test_the_window_is_24_real_hours_across_a_dst_change():
+    # London springs forward at 01:00 on Sun 28 Mar 2027: a day started at 09:00 GMT on the
+    # Saturday ends 24 hours later, which the clock there reads as 10:00 BST.
+    c, slug = started(now=at(LONDON, "2027-03-27T09:00"), day="2027-03-27", tz=LONDON)
+    end = c.tracker(slug)["open_day"]["day_end_ms"]
+    assert end - at(LONDON, "2027-03-27T09:00") == DAY
+    assert end == at(LONDON, "2027-03-28T10:00")
+
+
+def test_start_today_is_refused_while_the_day_is_open():
+    c, slug = started(now=at(PUNE, "2026-11-15T23:59"))
+    c.now = at(PUNE, "2026-11-16T09:00")
+    status, body = c.start_today(slug, "2026-11-16")
     assert status == 409 and body["code"] == "day_open"
-    assert body["error"] == "Today already has its day. One day per date."
+    assert body["error"] == "This day is still open. The next one starts once it ends, 24 hours after it began."
 
 
-def test_start_today_refused_for_a_date_already_saved_even_after_travelling():
-    # Started in Auckland on Mon 16 Nov, saved after it ended there; it is still Mon 16 Nov
-    # in San Francisco, so Start today there would make a second day for the same date.
-    c = Client(now_ms=at(AUCKLAND, "2026-11-16T09:00"))
-    slug = c.new_tracker()
-    assert c.start_today(slug, "2026-11-16", AUCKLAND)[0] == 200
-    c.now = at(AUCKLAND, "2026-11-17T00:05")
-    c.ok("POST", f"/trackers/{slug}/save-day")
+def test_start_today_right_after_the_end_saves_the_old_day_and_opens_the_next_at_zero():
+    c, slug = started(now=at(PUNE, "2026-11-15T23:59"))
+    ids = c.timer_ids(slug)
+    c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
+    c.now = at(PUNE, "2026-11-16T23:59")
+    status, body = c.start_today(slug, "2026-11-16")
+    assert status == 200, body
+    t = body["tracker"]
+    assert t["open_day"]["date"] == "2026-11-16" and t["open_day"]["day_end_ms"] == at(PUNE, "2026-11-17T23:59")
+    assert all(x["acc_ms"] == 0 and x["running_since_ms"] is None for x in t["timers"])
+    assert c.history(slug)["days"] == [{"date": "2026-11-15", "tz_label": "Pune (IST)",
+                                        "values": {str(ids[0]): DAY, str(ids[1]): 0, str(ids[2]): 0}}]
+
+
+def test_one_day_per_date_a_saved_date_is_not_started_again_even_after_travelling():
+    # Started in Auckland on Mon 16 Nov and saved at its end; it is still Mon 16 Nov in San
+    # Francisco, so Start today there would make a second day for the same date.
+    c, slug = started(now=at(AUCKLAND, "2026-11-16T09:00"), day="2026-11-16", tz=AUCKLAND)
+    c.now = at(AUCKLAND, "2026-11-17T09:00")
     assert c.now < at(SF, "2026-11-17T00:00")
     status, body = c.start_today(slug, "2026-11-16", SF)
     assert status == 409 and body["code"] == "date_taken"
+    assert body["error"] == "One day per date: 2026-11-16 is already saved."
+    assert c.tracker(slug)["last_outcome"] == "saved"
+
+
+def test_one_day_per_date_holds_on_a_25_hour_dst_day():
+    # London falls back at 02:00 on Sun 25 Oct 2026, so that date lasts 25 hours: a day
+    # started at 00:30 ends at 23:30 the same date, and that date cannot start again.
+    c, slug = started(now=at(LONDON, "2026-10-25T00:30"), day="2026-10-25", tz=LONDON)
+    end = c.tracker(slug)["open_day"]["day_end_ms"]
+    assert end == at(LONDON, "2026-10-25T23:30")
+    c.now = at(LONDON, "2026-10-25T23:45")
+    assert c.start_today(slug, "2026-10-25", LONDON)[1]["code"] == "date_taken"
+    c.now = at(LONDON, "2026-10-26T00:00")
+    assert c.start_today(slug, "2026-10-26", LONDON)[0] == 200
 
 
 def test_start_today_refuses_a_date_that_is_not_today_on_the_server_clock():
@@ -73,208 +144,209 @@ def test_start_today_rejects_a_stamp_that_is_not_one_calendar_day():
         assert c.call("POST", f"/trackers/{slug}/start-today", {**stamp(PUNE, "2026-11-15"), **bad})[0] == 422
 
 
-def test_dst_day_of_23_hours_is_accepted():
-    c = Client(now_ms=at("Europe/London", "2027-03-28T10:00"))
+def test_dst_calendar_day_of_23_hours_is_accepted_and_still_gets_a_24_hour_window():
+    c = Client(now_ms=at(LONDON, "2027-03-28T10:00"))
     slug = c.new_tracker()
-    s = stamp("Europe/London", "2027-03-28")
+    s = stamp(LONDON, "2027-03-28")
     assert s["day_end_ms"] - s["day_start_ms"] == 23 * HOUR
-    assert c.call("POST", f"/trackers/{slug}/start-today", s)[0] == 200
+    body = c.call("POST", f"/trackers/{slug}/start-today", s)[1]
+    assert body["tracker"]["open_day"]["day_end_ms"] == c.now + DAY
 
 
-def test_start_today_zeroes_every_timer():
-    c, slug = started()
+# ── at the end: every timer stops at the end, the day saves itself, zero ─────
+
+def ran_through_the_end():
+    """Workday, opened 23:59 on Sun 15 Nov: Deep work ran 1 h and stopped; Email started at
+    23:00 on the 16th and is still running when the day ends at 23:59."""
+    c, slug = started(now=at(PUNE, "2026-11-15T23:59"))
     ids = c.timer_ids(slug)
-    c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
-    c.advance(30 * MINUTE)
-    c.ok("POST", f"/trackers/{slug}/stop-all")
     c.now = at(PUNE, "2026-11-16T08:00")
-    c.ok("POST", f"/trackers/{slug}/save-day")
-    c.start_today(slug, "2026-11-16")
-    assert all(x["acc_ms"] == 0 and x["running_since_ms"] is None for x in c.tracker(slug)["timers"])
-
-
-# ── the Start today prompt (answer 2) ────────────────────────────────────────
-
-def unsaved_earlier_day():
-    """Thesis: a day on Fri 13 Nov, never saved; it is now Sun 15 Nov."""
-    c = Client(now_ms=at(PUNE, "2026-11-13T08:47"))
-    slug = c.new_tracker("Thesis", 2)
-    c.start_today(slug, "2026-11-13")
-    ids = c.timer_ids(slug)
     c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
-    c.advance(3 * HOUR)
+    c.advance(HOUR)
     c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/stop")
-    c.now = at(PUNE, "2026-11-15T14:14")
+    c.now = at(PUNE, "2026-11-16T23:00")
+    c.ok("POST", f"/trackers/{slug}/timers/{ids[2]}/start")
     return c, slug, ids
 
 
-def test_prompt_start_today_with_an_unsaved_earlier_day_asks_first():
-    c, slug, _ = unsaved_earlier_day()
-    status, body = c.start_today(slug)
-    assert status == 409 and body["code"] == "last_day_unsaved"
-    assert c.tracker(slug)["open_day"]["date"] == "2026-11-13"
+def test_at_the_end_running_timers_stop_at_the_end_and_the_day_is_saved_then_zero():
+    c, slug, ids = ran_through_the_end()
+    c.now = at(PUNE, "2026-11-16T23:59")
+    t = c.tracker(slug)
+    assert t["open_day"] is None and t["phase"] is None and t["last_outcome"] == "saved"
+    assert all(x["acc_ms"] == 0 and x["running_since_ms"] is None for x in t["timers"])
+    saved = t["saved_day"]
+    assert saved["date"] == "2026-11-15"
+    assert saved["started_at_ms"] == at(PUNE, "2026-11-15T23:59")
+    assert saved["day_end_ms"] == saved["saved_at_ms"] == at(PUNE, "2026-11-16T23:59")
+    assert c.history(slug)["days"][0]["values"] == {str(ids[0]): HOUR, str(ids[1]): 0, str(ids[2]): 59 * MINUTE}
+    assert rows(c, "open_days") == rows(c, "open_day_timers") == 0
 
 
-def test_prompt_save_it_first_saves_then_today_starts_at_zero():
-    c, slug, ids = unsaved_earlier_day()
-    status, body = c.start_today(slug, last_day="save")
-    assert status == 200, body
-    t = body["tracker"]
-    assert t["open_day"]["date"] == "2026-11-15" and t["phase"] == "live"
-    assert all(x["acc_ms"] == 0 for x in t["timers"])
-    days = c.history(slug)["days"]
-    assert [d["date"] for d in days] == ["2026-11-13"]
-    assert days[0]["values"][str(ids[0])] == 3 * HOUR
+def test_a_request_long_after_the_end_saves_exactly_what_the_day_held_at_its_end():
+    # No tab open, the laptop shut: the first request comes three days later.
+    c, slug, ids = ran_through_the_end()
+    c.now = at(PUNE, "2026-11-19T15:00")
+    t = c.tracker(slug)
+    assert t["last_outcome"] == "saved" and t["saved_day"]["saved_at_ms"] == at(PUNE, "2026-11-16T23:59")
+    assert c.history(slug)["days"][0]["values"][str(ids[2])] == 59 * MINUTE
 
 
-def test_prompt_save_it_first_is_refused_while_a_timer_runs_on_that_day():
-    c2, slug2, ids2 = unsaved_earlier_day()
-    # leave a timer running past midnight on the 13th
-    c2.now = at(PUNE, "2026-11-13T22:00")
-    c2.ok("POST", f"/trackers/{slug2}/timers/{ids2[1]}/start")
-    c2.now = at(PUNE, "2026-11-15T14:14")
-    status, body = c2.start_today(slug2, last_day="save")
-    assert status == 409 and body["code"] == "timers_running"
-    assert c2.tracker(slug2)["open_day"]["date"] == "2026-11-13"
-    assert c2.history(slug2)["days"] == []
-
-
-def test_prompt_discard_it_deletes_the_day_then_today_starts():
-    c, slug, _ = unsaved_earlier_day()
-    status, body = c.start_today(slug, last_day="discard")
-    assert status == 200
-    assert body["tracker"]["open_day"]["date"] == "2026-11-15"
+def test_nothing_closes_before_the_end():
+    c, slug, ids = ran_through_the_end()
+    c.now = at(PUNE, "2026-11-16T23:59") - 1
+    t = c.tracker(slug)
+    assert t["phase"] == "live" and elapsed(t["timers"][2], c.now) == 59 * MINUTE - 1
     assert c.history(slug)["days"] == []
 
 
-def test_prompt_choice_without_an_unsaved_day_is_invalid():
-    c = Client()
-    slug = c.new_tracker()
-    assert c.start_today(slug, last_day="save")[0] == 422
-    assert c.start_today(slug, last_day="later")[0] == 422
+def test_every_route_closes_an_ended_day_first():
+    for read in (
+        lambda c, slug, ids: c.ok("GET", "/trackers"),
+        lambda c, slug, ids: c.ok("GET", f"/trackers/{slug}/history"),
+        lambda c, slug, ids: c.ok("POST", f"/trackers/{slug}/stop-all"),
+        lambda c, slug, ids: c.call("POST", f"/trackers/{slug}/timers/{ids[1]}/start"),
+        lambda c, slug, ids: c.call("PATCH", f"/trackers/{slug}/timers/{ids[1]}", {"name": "x"}),
+        lambda c, slug, ids: c.call("POST", f"/trackers/{slug}/timers"),
+        lambda c, slug, ids: c.call("POST", f"/trackers/{slug}/discard-day"),
+    ):
+        c, slug, ids = ran_through_the_end()
+        c.now = at(PUNE, "2026-11-17T10:00")
+        read(c, slug, ids)
+        saved = c.db.prepare("SELECT date, saved_at_ms FROM history_days").bind()._execute()
+        assert saved == [{"date": "2026-11-15", "saved_at_ms": at(PUNE, "2026-11-16T23:59")}]
+        assert rows(c, "open_days") == 0
+        assert rows(c, "history_values") == 3
 
 
-# ── Save last day: unlocks when the date ends in the day's own zone (B, C) ───
-
-def test_save_is_locked_until_the_date_ends_in_its_zone():
-    c, slug = started()
-    c.now = at(PUNE, "2026-11-15T23:59")
-    status, body = c.call("POST", f"/trackers/{slug}/save-day")
-    assert status == 409 and body["code"] == "day_not_ended"
-    c.now = at(PUNE, "2026-11-16T00:00")
-    assert c.tracker(slug)["phase"] == "ended"
-    assert c.call("POST", f"/trackers/{slug}/save-day")[0] == 200
-
-
-def test_save_unlock_follows_the_starting_zone_not_the_viewers():
-    # Started in Auckland: it unlocks at Auckland's midnight, which is still the
-    # afternoon of the same date in San Francisco.
-    c = Client(now_ms=at(AUCKLAND, "2026-11-16T08:00"))
-    slug = c.new_tracker()
-    c.start_today(slug, "2026-11-16", AUCKLAND)
-    c.now = at(AUCKLAND, "2026-11-17T00:00") - 1
-    assert c.call("POST", f"/trackers/{slug}/save-day")[1]["code"] == "day_not_ended"
-    c.now = at(AUCKLAND, "2026-11-17T00:00")
-    assert c.now < at(SF, "2026-11-16T12:00")  # SF has not reached midnight
-    assert c.call("POST", f"/trackers/{slug}/save-day")[0] == 200
+def test_after_the_end_starts_are_refused_and_stop_finds_nothing_left_to_stop():
+    c, slug, ids = ran_through_the_end()
+    c.now = at(PUNE, "2026-11-17T00:30")
+    status, body = c.call("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
+    assert (status, body["code"]) == (409, "day_ended")
+    assert body["error"] == "This day has ended and saved itself. Press Start today for the next one."
+    for path in ("/start-all", "/relaunch", "/clear-all", "/timers"):
+        assert c.call("POST", f"/trackers/{slug}{path}")[1]["code"] == "day_ended", path
+    # a Stop sent from a tab that had not yet seen the end: the timer already stopped at it
+    t = c.ok("POST", f"/trackers/{slug}/timers/{ids[2]}/stop")["tracker"]
+    assert t["last_outcome"] == "saved" and all(x["running_since_ms"] is None for x in t["timers"])
+    assert c.history(slug)["days"][0]["values"][str(ids[2])] == 59 * MINUTE
 
 
-def test_save_is_greyed_while_any_timer_runs():
-    c, slug = started()
-    ids = c.timer_ids(slug)
-    c.ok("POST", f"/trackers/{slug}/timers/{ids[2]}/start")
-    c.now = at(PUNE, "2026-11-16T01:00")
-    status, body = c.call("POST", f"/trackers/{slug}/save-day")
-    assert status == 409 and body["code"] == "timers_running"
-    c.ok("POST", f"/trackers/{slug}/stop-all")
-    assert c.call("POST", f"/trackers/{slug}/save-day")[0] == 200
+def test_a_stop_pressed_at_the_end_never_counts_past_it():
+    c, slug, ids = ran_through_the_end()
+    end = at(PUNE, "2026-11-16T23:59")
+    c.now = end - 200
+    c.ok("POST", f"/trackers/{slug}/timers/{ids[2]}/stop", {"pressed_at_ms": end + 700})
+    c.now = end
+    assert c.history(slug)["days"][0]["values"][str(ids[2])] == 59 * MINUTE
 
 
-def test_saved_day_moves_from_open_day_into_history_and_shows_read_only():
-    c, slug = started()
-    ids = c.timer_ids(slug)
-    c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
-    c.advance(90 * MINUTE)
-    c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/stop")
-    c.now = at(PUNE, "2026-11-16T07:00")
-    t = c.ok("POST", f"/trackers/{slug}/save-day")["tracker"]
-    assert t["open_day"] is None and t["phase"] is None and t["last_outcome"] == "saved"
-    assert t["saved_day"]["date"] == "2026-11-15"
-    assert t["timers"][0]["acc_ms"] == 90 * MINUTE and t["timers"][0]["running_since_ms"] is None
-    rows = c.db.prepare("SELECT COUNT(*) AS n FROM open_days").bind()._execute()
-    assert rows[0]["n"] == 0
-    assert c.history(slug)["days"][0]["values"] == {str(ids[0]): 90 * MINUTE, str(ids[1]): 0, str(ids[2]): 0}
-    # read-only: timer actions are refused until the next Start today
-    assert c.call("POST", f"/trackers/{slug}/timers/{ids[0]}/start")[1]["code"] == "no_day"
-    assert c.call("POST", f"/trackers/{slug}/save-day")[1]["code"] == "no_day"
+def test_closing_twice_saves_once():
+    c, slug, ids = ran_through_the_end()
+    c.now = at(PUNE, "2026-11-17T00:00")
+    first = c.tracker(slug)
+    c.advance(HOUR)
+    assert c.tracker(slug)["saved_day"] == first["saved_day"]
+    assert rows(c, "history_days") == 1 and rows(c, "history_values") == 3
 
 
-def test_save_after_save_is_refused_and_next_start_today_opens_a_new_date():
-    c, slug = started()
-    c.now = at(PUNE, "2026-11-16T07:00")
-    c.ok("POST", f"/trackers/{slug}/save-day")
-    status, body = c.start_today(slug, "2026-11-16")
-    assert status == 200 and body["tracker"]["open_day"]["date"] == "2026-11-16"
-
-
-# ── an ended day: only Stop and Stop all (view 5b, C2) ──────────────────────
-
-def test_ended_day_with_a_timer_running_keeps_counting_and_only_stop_works():
+def test_a_removed_timer_is_not_saved_with_the_day():
     c, slug = started()
     ids = c.timer_ids(slug)
-    c.now = at(PUNE, "2026-11-15T23:00")
-    c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
-    c.now = at(PUNE, "2026-11-16T09:00")
-    t = c.tracker(slug)
-    assert t["phase"] == "ended"
-    assert elapsed(t["timers"][0], c.now) == 10 * HOUR  # counted into that day past midnight
-    for path in (f"/timers/{ids[1]}/start", f"/timers/{ids[0]}/clear", "/start-all", "/relaunch", "/clear-all", "/timers"):
-        status, body = c.call("POST", f"/trackers/{slug}{path}")
-        assert status == 409 and body["code"] == "day_ended", path
-    assert c.call("PATCH", f"/trackers/{slug}/timers/{ids[0]}", {"name": "x"})[1]["code"] == "day_ended"
-    assert c.call("DELETE", f"/trackers/{slug}/timers/{ids[0]}")[1]["code"] == "day_ended"
-    c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/stop")
-    assert c.tracker(slug)["timers"][0]["acc_ms"] == 10 * HOUR
-    c.ok("POST", f"/trackers/{slug}/timers/{ids[1]}/stop")  # a stopped timer: nothing changes
-    c.ok("POST", f"/trackers/{slug}/save-day")
+    c.ok("POST", f"/trackers/{slug}/timers/{ids[1]}/start")
+    c.advance(MINUTE)
+    c.ok("DELETE", f"/trackers/{slug}/timers/{ids[1]}")
+    c.advance(DAY)
+    assert c.history(slug)["days"][0]["values"] == {str(ids[0]): 0, str(ids[2]): 0}
 
 
-def test_stop_all_works_on_an_ended_day():
-    c, slug = started()
-    ids = c.timer_ids(slug)
-    c.ok("POST", f"/trackers/{slug}/start-all")
-    c.now = at(PUNE, "2026-11-16T01:00")
-    c.ok("POST", f"/trackers/{slug}/stop-all")
-    assert all(x["running_since_ms"] is None for x in c.tracker(slug)["timers"])
-    assert len(ids) == 3
+def test_list_rows_show_the_open_days_end_and_a_closed_day_as_saved():
+    c, slug = started(now=at(PUNE, "2026-11-15T23:59"))
+    row = c.ok("GET", "/trackers")["trackers"][0]
+    assert row["open_day"] == {"date": "2026-11-15", "tz": PUNE, "day_end_ms": at(PUNE, "2026-11-16T23:59"), "running": 0}
+    c.now = at(PUNE, "2026-11-16T23:59")
+    row = c.ok("GET", "/trackers")["trackers"][0]
+    assert row["open_day"] is None and row["last_outcome"] == "saved" and row["saved_date"] == "2026-11-15"
 
 
-# ── Discard last day (E, C1) ─────────────────────────────────────────────────
+# ── Discard last day: the open day, before its end ───────────────────────────
 
-def test_discard_is_locked_until_the_date_ends():
-    c, slug = started()
-    status, body = c.call("POST", f"/trackers/{slug}/discard-day")
-    assert status == 409 and body["code"] == "day_not_ended"
-
-
-def test_discard_wipes_the_day_and_it_never_reaches_history_or_charts():
+def test_discard_deletes_the_open_day_before_its_end_and_it_never_reaches_history():
     c, slug = started()
     ids = c.timer_ids(slug)
     c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
     c.advance(2 * HOUR)
-    c.now = at(PUNE, "2026-11-16T10:00")
     t = c.ok("POST", f"/trackers/{slug}/discard-day")["tracker"]  # allowed with a timer running
     assert t["open_day"] is None and t["last_outcome"] == "discarded" and t["saved_day"] is None
     assert all(x["acc_ms"] == 0 for x in t["timers"])
     assert c.history(slug)["days"] == []
     for table in ("open_days", "open_day_timers", "history_days", "history_values"):
-        assert c.db.prepare(f"SELECT COUNT(*) AS n FROM {table}").bind()._execute()[0]["n"] == 0, table
-    # and the date is free again only in the sense that it has ended: a new date starts fine
-    assert c.start_today(slug, "2026-11-16")[0] == 200
+        assert rows(c, table) == 0, table
+    # a discarded date was never saved, so it can start again
+    assert c.start_today(slug)[0] == 200
 
 
-def test_nothing_to_save_or_discard_without_a_day():
+def test_nothing_to_discard_without_a_day_or_once_it_saved_itself():
     c = Client()
     slug = c.new_tracker()
-    assert c.call("POST", f"/trackers/{slug}/save-day")[1]["code"] == "no_day"
     assert c.call("POST", f"/trackers/{slug}/discard-day")[1]["code"] == "no_day"
+    c.start_today(slug)
+    c.advance(DAY)
+    assert c.call("POST", f"/trackers/{slug}/discard-day")[1]["code"] == "no_day"
+    assert [d["date"] for d in c.history(slug)["days"]] == ["2026-11-15"]
+
+
+def test_save_last_day_is_no_longer_a_request():
+    c, slug = started()
+    assert c.call("POST", f"/trackers/{slug}/save-day")[0] == 404
+
+
+# ── a day open when this rule shipped (migration 0003) ───────────────────────
+
+def _db_before_0003() -> SqliteD1:
+    db = SqliteD1(sqlite3.connect(":memory:"))
+    for migration in sorted(MIGRATIONS.glob("*.sql")):
+        if migration.name < "0003":
+            db.executescript(migration.read_text())
+    return db
+
+
+def _open_old_day(db, slug: str, started_at: int, running_since: int | None) -> None:
+    """A day as the calendar rule left it: its date's midnight-to-midnight bounds."""
+    day = stamp(PUNE, "2026-11-15")
+    db.executescript(f"""
+        INSERT INTO users (id, email, created_at_ms) VALUES (1, 'owner@example.com', 0) ON CONFLICT DO NOTHING;
+        INSERT INTO trackers (user_id, slug, name, created_at_ms) VALUES (1, '{slug}', '{slug}', 0);
+        INSERT INTO timers (tracker_id, position, name) SELECT id, 1, '' FROM trackers WHERE slug = '{slug}';
+        INSERT INTO open_days (tracker_id, date, tz, tz_label, day_start_ms, day_end_ms, started_at_ms)
+          SELECT id, '2026-11-15', '{PUNE}', 'Pune (IST)', {day['day_start_ms']}, {day['day_end_ms']}, {started_at}
+            FROM trackers WHERE slug = '{slug}';
+        INSERT INTO open_day_timers (timer_id, tracker_id, acc_ms, running_since_ms, changed_at_ms)
+          SELECT t.id, t.tracker_id, 0, {'NULL' if running_since is None else running_since}, {started_at}
+            FROM timers t JOIN trackers tr ON tr.id = t.tracker_id WHERE tr.slug = '{slug}';
+    """)
+
+
+def test_migration_gives_a_day_already_open_the_window_from_its_own_start():
+    db = _db_before_0003()
+    started_at = at(PUNE, "2026-11-15T20:00")
+    _open_old_day(db, "fresh", started_at, None)
+    _open_old_day(db, "stale", at(PUNE, "2026-11-15T07:00"), at(PUNE, "2026-11-15T09:00"))
+    db.executescript((MIGRATIONS / "0003_day_window.sql").read_text())
+    c = Client(db, now_ms=at(PUNE, "2026-11-16T08:00"))
+    # opened 20:00 on the 15th: open until 20:00 on the 16th, not midnight
+    fresh = c.tracker("fresh")
+    assert fresh["phase"] == "live"
+    assert (fresh["open_day"]["day_start_ms"], fresh["open_day"]["day_end_ms"]) == (started_at, started_at + DAY)
+    # opened 07:00 on the 15th with a timer running since 09:00: its end (07:00 on the 16th)
+    # has passed, so the first request closes it there and the timer stops at that end
+    stale = c.tracker("stale")
+    assert stale["open_day"] is None and stale["last_outcome"] == "saved"
+    assert stale["saved_day"]["saved_at_ms"] == at(PUNE, "2026-11-16T07:00")
+    assert list(c.history("stale")["days"][0]["values"].values()) == [22 * HOUR]
+
+
+def test_migrations_dir_still_numbers_every_file():
+    names = sorted(p.name for p in Path(MIGRATIONS).glob("*.sql"))
+    assert [n[:4] for n in names] == [f"{i:04d}" for i in range(1, len(names) + 1)]

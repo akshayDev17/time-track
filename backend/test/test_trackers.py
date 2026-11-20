@@ -31,11 +31,11 @@ def test_list_shows_each_trackers_day_state_in_creation_order():
     c = Client(now_ms=at(PUNE, "2026-11-13T09:00"))
     thesis = c.new_tracker("Thesis", 4)
     c.start_today(thesis, "2026-11-13")
-    c.now = at(PUNE, "2026-11-14T18:30")
+    c.ok("POST", f"/trackers/{thesis}/discard-day")
+    c.now = at(PUNE, "2026-11-14T08:30")
     guitar = c.new_tracker("Guitar practice", 3)
     c.start_today(guitar, "2026-11-14")
-    c.now = at(PUNE, "2026-11-15T09:02")
-    c.ok("POST", f"/trackers/{guitar}/save-day")
+    c.now = at(PUNE, "2026-11-15T09:02")  # Guitar practice's day ended at 08:30 and saved itself
     work = c.new_tracker("Workday", 6)
     c.start_today(work)
     c.ok("POST", f"/trackers/{work}/timers/{c.timer_ids(work)[0]}/start")
@@ -43,9 +43,10 @@ def test_list_shows_each_trackers_day_state_in_creation_order():
     rows = c.ok("GET", "/trackers")["trackers"]
     assert [r["name"] for r in rows] == ["Thesis", "Guitar practice", "Workday", "Reading"]
     thesis_row, guitar_row, work_row, reading_row = rows
-    assert thesis_row["open_day"]["date"] == "2026-11-13" and thesis_row["open_day"]["day_end_ms"] <= c.now
+    assert thesis_row["open_day"] is None and thesis_row["last_outcome"] == "discarded" and thesis_row["saved_date"] is None
     assert guitar_row["open_day"] is None and guitar_row["last_outcome"] == "saved" and guitar_row["saved_date"] == "2026-11-14"
-    assert work_row["open_day"]["running"] == 1 and work_row["timer_count"] == 6
+    assert work_row["open_day"] == {"date": "2026-11-15", "tz": PUNE, "day_end_ms": at(PUNE, "2026-11-16T09:02"), "running": 1}
+    assert work_row["timer_count"] == 6
     assert reading_row["open_day"] is None and reading_row["last_outcome"] is None and reading_row["saved_date"] is None
 
 
@@ -56,9 +57,7 @@ def test_delete_tracker_wipes_every_row_of_it():
     c.start_today(slug)
     ids = c.timer_ids(slug)
     c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
-    c.now = at(PUNE, "2026-11-16T09:00")
-    c.ok("POST", f"/trackers/{slug}/stop-all")
-    c.ok("POST", f"/trackers/{slug}/save-day")
+    c.now = at(PUNE, "2026-11-16T09:30")  # the day ended at 09:02 and saved itself
     c.start_today(slug, "2026-11-16")
     assert c.ok("DELETE", f"/trackers/{slug}") is None
     assert c.call("GET", f"/trackers/{slug}")[0] == 404
@@ -79,8 +78,7 @@ def test_history_lists_saved_days_with_values_per_timer():
     c.ok("POST", f"/trackers/{slug}/timers/{ids[0]}/start")
     c.advance(45 * MINUTE)
     c.ok("POST", f"/trackers/{slug}/stop-all")
-    c.now = at(PUNE, "2026-11-15T09:00")
-    c.ok("POST", f"/trackers/{slug}/save-day")
+    c.now = at(PUNE, "2026-11-15T09:00")  # its end: the Charts page's read saves it
     h = c.history(slug)
     assert h["name"] == "Workday"
     assert h["timers"] == [
@@ -98,7 +96,7 @@ def test_per_user_isolation():
     other = c.as_user(OTHER)
     assert other.ok("GET", "/trackers")["trackers"] == []
     for method, path in (("GET", ""), ("GET", "/history"), ("DELETE", ""), ("POST", "/start-today"),
-                         ("POST", "/save-day"), ("POST", "/discard-day"), ("POST", "/start-all"),
+                         ("POST", "/discard-day"), ("POST", "/start-all"),
                          ("POST", "/timers"), ("POST", f"/timers/{ids[0]}/start"),
                          ("PATCH", f"/timers/{ids[0]}"), ("DELETE", f"/timers/{ids[0]}")):
         status, _ = other.call(method, f"/trackers/{slug}{path}", {"name": "x"} if method == "PATCH" else None)

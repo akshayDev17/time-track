@@ -61,7 +61,6 @@ ROUTES = [
     ("DELETE", rf"/trackers/{SLUG}", lambda db, u, m, b, n: T.delete_tracker(db, u, m["slug"])),
     ("GET", rf"/trackers/{SLUG}/history", lambda db, u, m, b, n: T.get_history(db, u, m["slug"], n)),
     ("POST", rf"/trackers/{SLUG}/start-today", lambda db, u, m, b, n: T.start_today(db, u, m["slug"], _object(b), n)),
-    ("POST", rf"/trackers/{SLUG}/save-day", lambda db, u, m, b, n: T.save_day(db, u, m["slug"], n)),
     ("POST", rf"/trackers/{SLUG}/discard-day", lambda db, u, m, b, n: T.discard_day(db, u, m["slug"], n)),
     ("POST", rf"/trackers/{SLUG}/(?P<action>start-all|stop-all|relaunch|clear-all)",
      lambda db, u, m, b, n: T.tracker_action(db, u, m["slug"], m["action"], _object(b), n)),
