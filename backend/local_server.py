@@ -17,8 +17,8 @@ Environment:
                   (anything but a GET) are accepted (default http://localhost:3000)
 
 Dev only, to click every transition through locally:
-  POST /__dev/clock {"offset_ms": N}      moves this server's clock N ms ahead (the date
-                                          rollover: Save last day unlocking at midnight)
+  POST /__dev/clock {"offset_ms": N}      moves this server's clock N ms ahead (a day
+                                          reaching its end 24 h after it started)
   POST /__dev/session {"signed_in": bool} signs the dev user in or out (Access's sign-in page)
   GET  /cdn-cgi/access/logout             signs out, as Access's logout endpoint does
 """

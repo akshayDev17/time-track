@@ -15,7 +15,7 @@ export type Tracker = {
   slug: string;
   name: string;
   last_outcome: 'saved' | 'discarded' | null;
-  phase: 'live' | 'ended' | null;
+  phase: 'live' | null;
   open_day: Day | null;
   saved_day: (Day & { saved_at_ms: number }) | null;
   timers: Timer[];
@@ -27,7 +27,7 @@ export type TrackerSummary = {
   slug: string;
   name: string;
   timer_count: number;
-  open_day: { date: string; day_end_ms: number; running: number } | null;
+  open_day: { date: string; tz: string; day_end_ms: number; running: number } | null;
   last_outcome: 'saved' | 'discarded' | null;
   saved_date: string | null;
 };

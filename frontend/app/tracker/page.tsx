@@ -5,9 +5,9 @@ import * as api from '../../lib/api';
 import { serverNow } from '../../lib/clock';
 import { dateLabel, plural } from '../../lib/format';
 import { chartsHref, homeHref, slugOf } from '../../lib/paths';
-import { cardMode, dayPanel, RENAME_HINT, runningCount, trackerView, type DayButton } from '../../lib/views';
+import { cardClock, cardMode, dayPanel, RENAME_HINT, settled, trackerView, type DayButton } from '../../lib/views';
 import { dayStamp } from '../../lib/zones';
-import { ConfirmDialog, StartTodayPrompt } from '../components/Dialog';
+import { ConfirmDialog } from '../components/Dialog';
 import Masthead from '../components/Masthead';
 import { ChartIcon, ControlBar, Pill, RenameGrid, TimerCard, useTick } from '../components/parts';
 import { useTracker } from '../components/useTracker';
@@ -16,12 +16,12 @@ type Confirm =
   | { kind: 'clear'; id: number }
   | { kind: 'clear-all' }
   | { kind: 'remove'; id: number }
-  | { kind: 'discard'; after?: 'start' }
+  | { kind: 'discard' }
   | null;
 
 const RENAME_DELAY_MS = 600;
 
-function DayButtonCell({ cls, label, b, onClick }: { cls: string; label: string; b: DayButton; onClick: () => void }) {
+function DayButtonCell({ cls, label, b, onClick }: { cls: string; label: string; b: DayButton; onClick?: () => void }) {
   return (
     <div className="dbtn">
       <button type="button" className={`btn ${cls}`} disabled={!b.on} onClick={onClick}>{label}</button>
@@ -31,9 +31,10 @@ function DayButtonCell({ cls, label, b, onClick }: { cls: string; label: string;
 }
 
 /**
- * The tracker page: /time-track/<slug>. What it shows depends on its day (views 4, 5, 5b, 7
- * and 10); every value comes from the server's start and stop times, so every device signed
- * in to the account shows the same times, ticking.
+ * The tracker page: /time-track/<slug>. What it shows depends on its day (views 4, 7 and 10);
+ * every value comes from the server's start and stop times, so every device signed in to the
+ * account shows the same times, ticking. At the day's end it shows the day saved and every
+ * timer at zero, without a reload.
  */
 export default function TrackerPage() {
   const [slug, setSlug] = useState<string | null | undefined>(undefined);
@@ -42,12 +43,11 @@ export default function TrackerPage() {
     setSlug(slugOf(window.location.pathname));
     api.getMe().then((me) => setEmail(me.email), () => {});
   }, []);
-  const { tracker, missing, expired, error, run, clearError } = useTracker(slug);
+  const { tracker: answered, missing, expired, error, run, clearError } = useTracker(slug);
   const [confirm, setConfirm] = useState<Confirm>(null);
-  const [prompt, setPrompt] = useState(false);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const timers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
-  useTick(true, 1000); // the countdown, and the flip when the date ends
+  useTick(true, 1000); // the countdown
 
   const sendName = useCallback(
     (id: number, name: string) => {
@@ -58,7 +58,7 @@ export default function TrackerPage() {
     [slug, run],
   );
 
-  if (slug === undefined || (!tracker && !missing && !expired && !error)) {
+  if (slug === undefined || (!answered && !missing && !expired && !error)) {
     return (
       <div className="pw">
         <Masthead session="signed-in" email={email} tail={[{ label: 'Trackers', href: homeHref() }, { label: 'Tracker' }]} />
@@ -66,7 +66,7 @@ export default function TrackerPage() {
       </div>
     );
   }
-  if (!tracker) {
+  if (!answered) {
     return (
       <div className="pw">
         <Masthead session="signed-in" email={email} tail={[{ label: 'Trackers', href: homeHref() }, { label: 'Tracker' }]} />
@@ -83,6 +83,7 @@ export default function TrackerPage() {
 
   const s = slug!;
   const now = serverNow();
+  const tracker = settled(answered, now);
   const view = trackerView(tracker, now);
   const mode = cardMode(view);
   const panel = dayPanel(tracker, now);
@@ -93,15 +94,9 @@ export default function TrackerPage() {
     return (drafts[id] ?? ts[i]?.name) || `Timer ${i + 1}`;
   };
 
-  const startToday = (lastDay?: 'save' | 'discard') =>
-    run(() => api.startToday(s, dayStamp(serverNow()), lastDay)).then((e) => {
-      if (e?.code === 'last_day_unsaved') setPrompt(true);
-    });
-
   const onStartToday = () => {
     clearError();
-    if (view === 'v5' || view === 'v5b') setPrompt(true);
-    else void startToday();
+    void run(() => api.startToday(s, dayStamp(serverNow())));
   };
 
   const onConfirm = () => {
@@ -110,7 +105,6 @@ export default function TrackerPage() {
     if (c.kind === 'clear') void run((at) => api.timerAction(s, c.id, 'clear', at));
     else if (c.kind === 'clear-all') void run((at) => api.trackerAction(s, 'clear-all', at));
     else if (c.kind === 'remove') void run(() => api.removeTimer(s, c.id));
-    else if (c.after === 'start') void startToday('discard');
     else void run(() => api.discardDay(s));
   };
 
@@ -118,7 +112,7 @@ export default function TrackerPage() {
     if (c.kind === 'clear') return [`${tname(c.id)} goes back to 00:00:00.0.`, 'Clear'];
     if (c.kind === 'clear-all') return ['Every timer goes back to 00:00:00.0.', 'Clear all'];
     if (c.kind === 'remove') return [`${tname(c.id)} leaves this tracker. Today’s time on it is not kept. Its saved days stay on the Charts page, marked removed.`, 'Remove timer'];
-    return [`${day ? dateLabel(day.date, true) : 'The last day'} is deleted for good. It never reaches History or the Charts page.`, 'Discard last day'];
+    return [`${day ? dateLabel(day.date, true) : 'This day'} is deleted for good. It never reaches History or the Charts page.`, 'Discard last day'];
   };
 
   const rename = (id: number, value: string) => {
@@ -155,7 +149,7 @@ export default function TrackerPage() {
         <p className="dexp">{panel.explain}</p>
         <div className="dbtns">
           <DayButtonCell cls="go" label="Start today" b={panel.start} onClick={onStartToday} />
-          <DayButtonCell cls="" label="Save last day" b={panel.save} onClick={() => void run(() => api.saveDay(s))} />
+          <DayButtonCell cls="" label="Save last day" b={panel.save} />
           <DayButtonCell cls="ghost dangertext" label="Discard last day" b={panel.discard} onClick={() => setConfirm({ kind: 'discard' })} />
         </div>
       </div>
@@ -172,7 +166,7 @@ export default function TrackerPage() {
             n={i + 1}
             timer={t}
             mode={mode}
-            clock={serverNow}
+            clock={cardClock(tracker, serverNow)}
             onStart={() => void run((at) => api.timerAction(s, t.id, 'start', at), { kind: 'start', id: t.id })}
             onStop={() => void run((at) => api.timerAction(s, t.id, 'stop', at), { kind: 'stop', id: t.id })}
             onClear={() => setConfirm({ kind: 'clear', id: t.id })}
@@ -193,21 +187,6 @@ export default function TrackerPage() {
       />
       {mode === 'live' && (
         <p className="syncl"><Pill pill={{ tone: 'ok', text: 'Synced' }} small />Same values on every device signed in to this account.</p>
-      )}
-      {prompt && day && (
-        <StartTodayPrompt
-          dateLabel={dateLabel(day.date, true)}
-          running={runningCount(ts)}
-          onCancel={() => setPrompt(false)}
-          onSave={() => {
-            setPrompt(false);
-            void startToday('save');
-          }}
-          onDiscard={() => {
-            setPrompt(false);
-            setConfirm({ kind: 'discard', after: 'start' });
-          }}
-        />
       )}
       {confirm && (() => {
         const [body, ok] = confirmBody(confirm);

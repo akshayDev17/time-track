@@ -1,8 +1,10 @@
 /**
  * The browser's own zone data, for the Start today stamp: the local date where the button is
  * pressed, when that date starts and ends there, and how pages name the zone. The server
- * checks the stamp against its clock and decides Save last day by `day_end_ms` alone.
+ * checks the stamp against its clock (the date must be today there); the day itself then lasts
+ * exactly 24 hours from when the server opened it, whatever the date's own bounds.
  */
+import { dateLabel } from './format.ts';
 
 export type DayStamp = { date: string; tz: string; tz_label: string; day_start_ms: number; day_end_ms: number };
 
@@ -91,4 +93,9 @@ export function clockTime(ms: number, tz: string): string {
   } catch {
     return '';
   }
+}
+
+/** "11:59 pm Mon 16 Nov": a moment as the clock and calendar read in `tz`. */
+export function momentLabel(ms: number, tz: string): string {
+  return `${clockTime(ms, tz)} ${dateLabel(localDate(ms, tz))}`;
 }

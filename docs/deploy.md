@@ -125,5 +125,6 @@ npx wrangler dev -c wrangler.jsonc -c "$SITE_THEMES_DIR/shell/wrangler.jsonc" --
 
 Open http://127.0.0.1:8788/time-track, the `ALLOWED_ORIGIN` given above.
 
-`local_server.py` documents its dev-only switches (signed out, moving its clock past midnight).
+`local_server.py` documents its dev-only switches (signed out, moving its clock past a day's
+24-hour end).
 `npm run test:views` does all of this itself and clicks through every view.

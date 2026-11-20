@@ -8,9 +8,10 @@ the same as one that does not exist.
 from __future__ import annotations
 
 from . import rules, store
-from .errors import Conflict, Invalid, NotFound
+from .errors import Conflict, NotFound
 
-ONE_DAY_PER_DATE = "Today already has its day. One day per date."
+DAY_OPEN = "This day is still open. The next one starts once it ends, 24 hours after it began."
+ONE_DAY_PER_DATE = "One day per date:"
 TIMER_CAP = f"{rules.MAX_TIMERS} of {rules.MAX_TIMERS}: the most a tracker holds."
 LAST_TIMER = "A tracker keeps at least one timer."
 
@@ -20,7 +21,7 @@ LAST_TIMER = "A tracker keeps at least one timer."
 def _summary(row: dict) -> dict:
     open_day = None
     if row["open_date"] is not None:
-        open_day = {"date": row["open_date"], "day_end_ms": row["open_end_ms"], "running": row["running"]}
+        open_day = {"date": row["open_date"], "tz": row["open_tz"], "day_end_ms": row["open_end_ms"], "running": row["running"]}
     return {
         "slug": row["slug"],
         "name": row["name"],
@@ -32,7 +33,7 @@ def _summary(row: dict) -> dict:
 
 
 async def list_trackers(db, user_id: int, now_ms: int) -> dict:
-    return {"now_ms": now_ms, "trackers": [_summary(r) for r in await store.tracker_summaries(db, user_id)]}
+    return {"now_ms": now_ms, "trackers": [_summary(r) for r in await store.tracker_summaries(db, user_id, now_ms)]}
 
 
 async def _tracker(db, user_id: int, slug: str) -> dict:
@@ -47,20 +48,20 @@ def _day(day: dict) -> dict:
     return {k: day[k] for k in keys}
 
 
-async def _read(db, user_id: int, slug: str, writes: list = ()) -> dict:
-    """``store.read_state`` (after ``writes``, in the same batch), or ``NotFound``."""
-    raw = await store.read_state(db, user_id, slug, writes) if isinstance(slug, str) else None
+async def _read(db, user_id: int, slug: str, now_ms: int, writes: list = ()) -> dict:
+    """``store.read_state`` (after ``writes`` and closing an ended day, in the same batch), or
+    ``NotFound``."""
+    raw = await store.read_state(db, user_id, slug, now_ms, writes) if isinstance(slug, str) else None
     if raw is None:
         raise NotFound("No such tracker.")
     return raw
 
 
 def tracker_state(raw: dict, now_ms: int) -> dict:
-    """The tracker page's whole state. Timers show the open day's times; with no day open,
-    the last saved day's (read-only, after Save last day), or zero."""
+    """The tracker page's whole state. Timers show the open day's times, and zero with no day
+    open; after a day saved itself, ``saved_day`` says which one."""
     tracker, day = raw["tracker"], raw["open_day"]
     saved = raw["saved_day"] if day is None and tracker["last_outcome"] == "saved" else None
-    values = saved["values"] if saved else {}
     return {
         "now_ms": now_ms,
         "tracker": {
@@ -74,7 +75,7 @@ def tracker_state(raw: dict, now_ms: int) -> dict:
                 {
                     "id": t["id"],
                     "name": t["name"],
-                    "acc_ms": (t["acc_ms"] or 0) if day else values.get(t["id"], 0),
+                    "acc_ms": (t["acc_ms"] or 0) if day else 0,
                     "running_since_ms": t["running_since_ms"] if day else None,
                 }
                 for t in raw["timers"]
@@ -84,11 +85,12 @@ def tracker_state(raw: dict, now_ms: int) -> dict:
 
 
 async def get_tracker(db, user_id: int, slug: str, now_ms: int) -> dict:
-    return tracker_state(await _read(db, user_id, slug), now_ms)
+    return tracker_state(await _read(db, user_id, slug, now_ms), now_ms)
 
 
 async def get_history(db, user_id: int, slug: str, now_ms: int) -> dict:
     tracker = await _tracker(db, user_id, slug)
+    await store.close_ended_day(db, user_id, slug, now_ms)
     timers, days, values = await store.history(db, tracker["id"])
     by_day: dict[int, dict[str, int]] = {d["id"]: {} for d in days}
     for v in values:
@@ -137,87 +139,52 @@ def _any_running(state: dict) -> int:
 
 
 async def start_today(db, user_id: int, slug: str, body: dict, now_ms: int) -> dict:
-    """Open today's day with every timer at zero.
+    """Open today's day with every timer at zero, for exactly 24 hours from now.
 
-    One day per date: refused while today's day is open, or when this date is already
-    saved. An earlier day that was never saved must be saved or discarded first; without
-    ``last_day`` the answer is a 409 ``last_day_unsaved`` so the page can ask.
+    Refused while a day is open (its window has not ended: one that has is closed and saved by
+    the read first), and when this date is already saved: one day per date.
     """
-    raw = await _read(db, user_id, slug)
+    raw = await _read(db, user_id, slug, now_ms)
     stamp = rules.day_stamp(body, now_ms)
-    choice = rules.last_day_choice(body)
-    tracker, state = raw["tracker"], tracker_state(raw, now_ms)
-    day = state["tracker"]["open_day"]
-    statements = []
-    if day is not None:
-        if rules.day_phase(day, now_ms) == rules.LIVE or day["date"] == stamp["date"]:
-            raise Conflict(ONE_DAY_PER_DATE, "day_open")
-        if choice is None:
-            raise Conflict(f"The last day ({day['date']}) is not saved. Save it first, or discard it.", "last_day_unsaved")
-        if choice == "save":
-            running = _any_running(state)
-            if running:
-                raise Conflict(f"Stop all timers first: {running} still running on that day.", "timers_running")
-            statements += store.save_day_statements(db, tracker["id"], day["date"], now_ms)
-        else:
-            statements += store.discard_day_statements(db, tracker["id"], day["date"])
-    elif choice is not None:
-        raise Invalid("There is no unsaved last day.")
+    tracker = raw["tracker"]
+    if raw["open_day"] is not None:
+        raise Conflict(DAY_OPEN, "day_open")
     if await store.has_saved_date(db, tracker["id"], stamp["date"]):
         raise Conflict(f"{ONE_DAY_PER_DATE} {stamp['date']} is already saved.", "date_taken")
     try:
-        await db.batch(statements + store.start_day_statements(db, tracker["id"], stamp, now_ms))
+        await db.batch(store.start_day_statements(db, tracker["id"], stamp, now_ms))
     except Exception as error:
         if store.is_unique_violation(error):
-            raise Conflict(ONE_DAY_PER_DATE, "day_open") from error
+            raise Conflict(DAY_OPEN, "day_open") from error
         raise
     return await get_tracker(db, user_id, slug, now_ms)
 
 
-async def _ended_day(db, user_id: int, slug: str, now_ms: int, verb: str) -> tuple[dict, dict]:
-    raw = await _read(db, user_id, slug)
-    state = tracker_state(raw, now_ms)
-    day = state["tracker"]["open_day"]
-    if day is None:
-        raise Conflict(f"Nothing to {verb}.", "no_day")
-    if rules.day_phase(day, now_ms) == rules.LIVE:
-        raise Conflict(f"Unlocks when {day['date']} ends in {day['tz_label']}.", "day_not_ended")
-    return raw["tracker"], state
-
-
-async def save_day(db, user_id: int, slug: str, now_ms: int) -> dict:
-    """Save last day: once its date has ended in its own zone, with every timer stopped."""
-    tracker, state = await _ended_day(db, user_id, slug, now_ms, "save")
-    running = _any_running(state)
-    if running:
-        raise Conflict(f"Stop all timers first: {running} still running.", "timers_running")
-    await db.batch(store.save_day_statements(db, tracker["id"], state["tracker"]["open_day"]["date"], now_ms))
-    return await get_tracker(db, user_id, slug, now_ms)
-
-
 async def discard_day(db, user_id: int, slug: str, now_ms: int) -> dict:
-    """Discard last day: deleted for good, never in History or on the Charts page."""
-    tracker, state = await _ended_day(db, user_id, slug, now_ms, "discard")
-    await db.batch(store.discard_day_statements(db, tracker["id"], state["tracker"]["open_day"]["date"]))
+    """Discard last day: the open day, before its end, deleted for good, never in History or
+    on the Charts page."""
+    raw = await _read(db, user_id, slug, now_ms)
+    day = raw["open_day"]
+    if day is None:
+        raise Conflict("Nothing to discard.", "no_day")
+    await db.batch(store.discard_day_statements(db, raw["tracker"]["id"], day["started_at_ms"]))
     return await get_tracker(db, user_id, slug, now_ms)
 
 
 # ── timers ───────────────────────────────────────────────────────────────────
 
-def _check_live(state: dict, allow_ended: bool = False) -> None:
-    """Refuse unless the day is open today (or, for Stop and Stop all, open on a date that has
-    ended: a timer left running past midnight)."""
-    phase = state["tracker"]["phase"]
-    if phase == rules.LIVE or (allow_ended and phase == rules.ENDED):
+def _check_live(state: dict) -> None:
+    """Refuse unless a day is open (one past its end was closed by the read)."""
+    if state["tracker"]["phase"] == rules.LIVE:
         return
-    if phase == rules.ENDED:
-        raise Conflict("This day has ended: only Stop and Stop all work.", "day_ended")
+    if state["tracker"]["last_outcome"] == "saved":
+        raise Conflict("This day has ended and saved itself. Press Start today for the next one.", "day_ended")
     raise Conflict("Press Start today first.", "no_day")
 
 
 async def _live(db, user_id: int, slug: str, now_ms: int) -> tuple[dict, dict]:
-    """The tracker and its state, refusing unless its day is open today."""
-    raw = await _read(db, user_id, slug)
+    """The tracker and its state, refusing unless its day is open."""
+    raw = await _read(db, user_id, slug, now_ms)
     state = tracker_state(raw, now_ms)
     _check_live(state)
     return raw["tracker"], state
@@ -240,8 +207,9 @@ async def timer_action(db, user_id: int, slug: str, timer_id: int, action: str, 
     write changed nothing, so the state read with it says why. Stamped with the press time
     (``rules.press_time``), so a press queued behind another one is not stamped late."""
     write = _TIMER_WRITES[action](db, user_id, slug, timer_id, rules.press_time(body, now_ms), now_ms)
-    state = tracker_state(await _read(db, user_id, slug, [write]), now_ms)
-    _check_live(state, allow_ended=action == "stop")
+    state = tracker_state(await _read(db, user_id, slug, now_ms, [write]), now_ms)
+    if action != "stop":  # a Stop that finds the day already closed has nothing left to do
+        _check_live(state)
     timer = _timer(state, timer_id)
     if action == "clear" and timer["running_since_ms"] is not None:
         raise Conflict("Stop the timer before clearing it.", "timer_running")
@@ -251,8 +219,9 @@ async def timer_action(db, user_id: int, slug: str, timer_id: int, action: str, 
 async def tracker_action(db, user_id: int, slug: str, action: str, body: dict, now_ms: int) -> dict:
     """Start all, Stop all, Relaunch or Clear all, in one round trip like ``timer_action``."""
     write = _TRACKER_WRITES[action](db, user_id, slug, rules.press_time(body, now_ms), now_ms)
-    state = tracker_state(await _read(db, user_id, slug, [write]), now_ms)
-    _check_live(state, allow_ended=action == "stop-all")
+    state = tracker_state(await _read(db, user_id, slug, now_ms, [write]), now_ms)
+    if action != "stop-all":
+        _check_live(state)
     if action == "clear-all" and _any_running(state):
         raise Conflict("Clear all waits until every timer is stopped.", "timers_running")
     return state

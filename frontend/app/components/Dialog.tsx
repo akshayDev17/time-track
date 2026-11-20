@@ -44,27 +44,3 @@ export function ConfirmDialog({ body, ok, onOk, onCancel }: { body: string; ok: 
     </Shell>
   );
 }
-
-/** The Start today prompt while the last day is unsaved (answer 2, view 6). */
-export function StartTodayPrompt({
-  dateLabel, running, onSave, onDiscard, onCancel,
-}: {
-  dateLabel: string;
-  running: number;
-  onSave: () => void;
-  onDiscard: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <Shell onCancel={onCancel} label="Your last day isn’t saved">
-      <h4>Your last day isn’t saved</h4>
-      <p>{dateLabel} still has unsaved times. Save it first, or discard it. Then today starts with every timer at zero.</p>
-      <div className="dact col">
-        <button type="button" className="btn go" disabled={running > 0} data-autofocus={running ? undefined : true} onClick={onSave}>Save it first</button>
-        {running > 0 && <p className="why">Stop all timers first: {running} still running on that day.</p>}
-        <button type="button" className="btn ghost dangertext" onClick={onDiscard}>Discard it</button>
-        <button type="button" className="linkbtn" data-autofocus={running ? true : undefined} onClick={onCancel}>Cancel</button>
-      </div>
-    </Shell>
-  );
-}

@@ -67,9 +67,7 @@ export const getTracker = (slug: string) => request<TrackerResponse>('GET', `/tr
 export const deleteTracker = (slug: string) => request<void>('DELETE', `/trackers/${e(slug)}`);
 export const getHistory = (slug: string) => request<HistoryResponse>('GET', `/trackers/${e(slug)}/history`);
 
-export const startToday = (slug: string, stamp: DayStamp, lastDay?: 'save' | 'discard') =>
-  request<TrackerResponse>('POST', `/trackers/${e(slug)}/start-today`, lastDay ? { ...stamp, last_day: lastDay } : stamp);
-export const saveDay = (slug: string) => request<TrackerResponse>('POST', `/trackers/${e(slug)}/save-day`);
+export const startToday = (slug: string, stamp: DayStamp) => request<TrackerResponse>('POST', `/trackers/${e(slug)}/start-today`, stamp);
 export const discardDay = (slug: string) => request<TrackerResponse>('POST', `/trackers/${e(slug)}/discard-day`);
 
 export type TrackerAction = 'start-all' | 'stop-all' | 'relaunch' | 'clear-all';

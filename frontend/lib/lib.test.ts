@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { dateLabel, displayPieces, dur, median, timeParts, untilLabel } from './format.ts';
-import { clockTime, dayStamp, localDate, zoneLabel, zoneMidnight } from './zones.ts';
-import { cardMode, dayPanel, listPill, trackerView } from './views.ts';
+import { clockTime, dayStamp, localDate, momentLabel, zoneLabel, zoneMidnight } from './zones.ts';
+import { cardClock, cardMode, dayPanel, listPill, settled, trackerView } from './views.ts';
 import { charts, medianNote, rangeDays } from './charts.ts';
 import { freshDemo, parseDemo } from './demo.ts';
 import { applyTimers } from './timers.ts';
@@ -10,10 +10,14 @@ import { SAMPLE_DAYS } from './sample.ts';
 import { slugOf } from './paths.ts';
 import { better, sampleOf } from './clock.ts';
 import { ApiError } from './api.ts';
-import { LOADING, changeFailed, changed, dismissed, pollFailed, polled, pressed } from './load.ts';
+import { LOADING, changeFailed, changed, dismissed, pollFailed, polled, pressed, reachedEnd } from './load.ts';
 import type { HistoryResponse, Timer, Tracker } from './types.ts';
 
 const PUNE = 'Asia/Kolkata';
+/** Wording with its no-break spaces read as plain ones. */
+const plain = <T,>(v: T): T => JSON.parse(JSON.stringify(v).replace(/\u00a0/g, ' '));
+const dayPanelPlain: typeof dayPanel = (...a) => plain(dayPanel(...a));
+const listPillPlain: typeof listPill = (...a) => plain(listPill(...a));
 const at = (iso: string, offset = '+05:30') => Date.parse(`${iso}${offset}`);
 const H = 3600000;
 const M = 60000;
@@ -53,6 +57,7 @@ test('day stamp: Pune date, its midnights and label', () => {
   assert.equal(s.tz_label, 'Kolkata (IST)');
   assert.equal(zoneLabel('Asia/Calcutta', at('2026-11-15T14:14')), 'Kolkata (IST)');
   assert.equal(clockTime(at('2026-11-15T09:02'), PUNE), '9:02 am');
+  assert.equal(momentLabel(at('2026-11-16T23:59'), PUNE), '11:59 pm Mon 16 Nov');
 });
 
 test('day stamp: the date is local, Auckland is a day ahead of San Francisco', () => {
@@ -77,10 +82,11 @@ test('day stamp across DST: 23 h and 25 h days, and a skipped midnight', () => {
 // ── views: the board's states and wording ────────────────────────────────────
 
 const timer = (id: number, name: string, acc = 0, since: number | null = null): Timer => ({ id, name, acc_ms: acc, running_since_ms: since });
-const day = (date: string, started: string) => ({
-  date, tz: PUNE, tz_label: 'Pune (IST)', day_start_ms: at(`${date}T00:00`),
-  day_end_ms: at(`${date}T00:00`) + 24 * H, started_at_ms: at(`${date}T${started}`),
-});
+/** An open day as the server answers it: 24 hours from its start. */
+const day = (date: string, started: string) => {
+  const start = at(`${date}T${started}`);
+  return { date, tz: PUNE, tz_label: 'Pune (IST)', day_start_ms: start, day_end_ms: start + 24 * H, started_at_ms: start };
+};
 const tracker = (over: Partial<Tracker>): Tracker => ({
   slug: 'x', name: 'X', last_outcome: null, phase: null, open_day: null, saved_day: null, timers: [timer(1, 'Writing')], ...over,
 });
@@ -90,51 +96,72 @@ test('view 4: brand-new and after discard', () => {
   const fresh = tracker({});
   assert.equal(trackerView(fresh, NOW), 'v4');
   assert.equal(cardMode('v4'), 'grey');
-  const p = dayPanel(fresh, NOW);
+  const p = dayPanelPlain(fresh, NOW);
   assert.equal(p.pill.text, 'New tracker · not started yet');
+  assert.equal(p.start.why, 'Opens a day of 24 hours from now, every timer at zero.');
   assert.deepEqual([p.start.on, p.save.on, p.discard.on], [true, false, false]);
-  assert.equal(dayPanel(tracker({ last_outcome: 'discarded' }), NOW).explain, 'The last day was discarded. Press Start today to begin a new day.');
+  assert.equal(dayPanelPlain(tracker({ last_outcome: 'discarded' }), NOW).explain, 'The last day was discarded. Press Start today to begin a new day.');
 });
 
-test('view 7: today\'s open day, Save waits for midnight where it started', () => {
-  const t = tracker({ open_day: day('2026-11-15', '09:02'), timers: [timer(1, 'Deep work', 0, NOW - M), timer(2, 'Email')] });
+test('view 7: the open day shows its end, 24 hours after its start, and saves itself then', () => {
+  const t = tracker({ phase: 'live', open_day: day('2026-11-15', '09:02'), timers: [timer(1, 'Deep work', 0, NOW - M), timer(2, 'Email')] });
   assert.equal(trackerView(t, NOW), 'v7');
-  const p = dayPanel(t, NOW);
+  assert.equal(cardMode('v7'), 'live');
+  const p = dayPanelPlain(t, NOW);
   assert.equal(p.pill.tone, 'live');
-  assert.equal(p.pill.text, 'Open day · today, Sun 15 Nov 2026 · started 9:02 am · Pune (IST) · 1 running');
-  assert.equal(p.start.why, 'Today already has its day. One day per date.');
-  assert.equal(p.save.why, 'Unlocks when Sun 15 Nov ends in Pune (IST), in 9 h 46 m.');
-  assert.deepEqual([p.start.on, p.save.on, p.discard.on], [false, false, false]);
+  assert.equal(p.pill.text, 'Open day · Sun 15 Nov 2026 · 9:02 am to 9:02 am Mon 16 Nov · Pune (IST) · 1 running');
+  assert.equal(p.explain, 'Times are kept on the server as they run, so every device shows the same. At 9:02 am Mon 16 Nov, 24 hours after it started, every timer stops, the day saves itself to History and the Charts page, and the timers go back to zero.');
+  assert.equal(p.start.why, 'Opens the next day once this one ends, in 18 h 48 m.');
+  assert.equal(p.save.why, 'Saves itself at 9:02 am Mon 16 Nov, in 18 h 48 m.');
+  assert.equal(p.discard.why, 'Deletes this day for good.');
+  assert.deepEqual([p.start.on, p.save.on, p.discard.on], [false, false, true]);
 });
 
-test('views 5 and 5b: the date has ended', () => {
-  const t = tracker({ open_day: day('2026-11-13', '08:47'), timers: [timer(1, 'Writing', 3 * H), timer(2, 'Figures', 20 * M)] });
-  assert.equal(trackerView(t, NOW), 'v5');
-  const p = dayPanel(t, NOW);
-  assert.equal(p.pill.text, 'Last day not saved · Fri 13 Nov 2026 · Pune (IST)');
-  assert.deepEqual([p.start.on, p.save.on, p.discard.on], [true, true, true]);
-  assert.equal(p.save.why, 'Fri 13 Nov ended at midnight in Pune (IST).');
-  const running = tracker({ ...t, timers: [timer(1, 'Writing', 0, NOW - 38 * H), timer(2, 'Figures')] });
-  assert.equal(trackerView(running, NOW), 'v5b');
-  const q = dayPanel(running, NOW);
-  assert.equal(q.save.on, false);
-  assert.equal(q.save.why, 'Stop all timers first: 1 still running.');
-  assert.equal(q.explain, 'Fri 13 Nov has ended, but Writing is still running and counting into that day. Stop it before saving.');
+test('view 7: a day opened at 11:59 pm is still open after midnight, until 11:59 pm the next day', () => {
+  const t = tracker({ phase: 'live', open_day: day('2026-11-15', '23:59') });
+  const p = dayPanelPlain(t, at('2026-11-16T00:30'));
+  assert.equal(p.pill.text, 'Open day · Sun 15 Nov 2026 · 11:59 pm to 11:59 pm Mon 16 Nov · Pune (IST)');
+  assert.equal(p.save.why, 'Saves itself at 11:59 pm Mon 16 Nov, in 23 h 29 m.');
+  assert.equal(trackerView(t, at('2026-11-16T23:58')), 'v7');
 });
 
-test('view 10: after Save last day', () => {
+test('at the end: the day shows saved, every timer at zero, without waiting for the server', () => {
+  const open = day('2026-11-15', '23:59');
+  const t = tracker({ phase: 'live', open_day: open, timers: [timer(1, 'Deep work', 0, open.day_end_ms - H), timer(2, 'Email', 20 * M)] });
+  assert.equal(settled(t, open.day_end_ms - 1), t);
+  const s = settled(t, open.day_end_ms);
+  assert.deepEqual(s, {
+    ...t, phase: null, open_day: null, last_outcome: 'saved', saved_day: { ...open, saved_at_ms: open.day_end_ms },
+    timers: [timer(1, 'Deep work'), timer(2, 'Email')],
+  });
+  assert.equal(trackerView(t, open.day_end_ms), 'v10');
+  const p = dayPanelPlain(t, open.day_end_ms + 5 * H);
+  assert.equal(p.pill.text, 'Saved · Sun 15 Nov 2026');
+  assert.equal(p.explain, 'Ended at 11:59 pm Mon 16 Nov and saved to History and the Charts page. Every timer is back at zero: press Start today to begin the next day.');
+  assert.deepEqual([p.start.on, p.save.on, p.discard.on], [true, false, false]);
+  // a card never reads past the end, even before the page re-renders
+  let now = open.day_end_ms + 700;
+  assert.equal(cardClock(t, () => now)(), open.day_end_ms);
+  now = open.day_end_ms - 700;
+  assert.equal(cardClock(t, () => now)(), now);
+  assert.equal(cardClock(s, () => now)(), now);
+});
+
+test('view 10: a day the server already saved', () => {
   const t = tracker({ last_outcome: 'saved', saved_day: { ...day('2026-11-14', '18:30'), saved_at_ms: NOW } });
   assert.equal(trackerView(t, NOW), 'v10');
-  assert.equal(dayPanel(t, NOW).pill.text, 'Saved · Sat 14 Nov 2026 · read-only');
+  assert.equal(dayPanelPlain(t, NOW).pill.text, 'Saved · Sat 14 Nov 2026');
 });
 
 test('Trackers list pills', () => {
   const base = { slug: 'x', name: 'X', timer_count: 3, last_outcome: null, saved_date: null, open_day: null } as const;
-  assert.deepEqual(listPill({ ...base, open_day: { date: '2026-11-15', day_end_ms: NOW + H, running: 2 } }, NOW), { tone: 'live', text: 'Open day · today · 2 running' });
-  assert.deepEqual(listPill({ ...base, open_day: { date: '2026-11-13', day_end_ms: NOW - H, running: 0 } }, NOW), { tone: 'warn', text: 'Last day not saved · Fri 13 Nov' });
-  assert.deepEqual(listPill({ ...base, last_outcome: 'saved', saved_date: '2026-11-14' }, NOW), { tone: 'ok', text: 'Saved · Sat 14 Nov · read-only until Start today' });
-  assert.deepEqual(listPill(base, NOW), { tone: '', text: 'New · not started yet' });
-  assert.deepEqual(listPill({ ...base, last_outcome: 'discarded' }, NOW), { tone: '', text: 'No open day' });
+  const open = { date: '2026-11-15', tz: PUNE, day_end_ms: at('2026-11-16T09:02'), running: 2 };
+  assert.deepEqual(listPillPlain({ ...base, open_day: open }, NOW), { tone: 'live', text: 'Open day · until 9:02 am Mon 16 Nov · 2 running' });
+  assert.deepEqual(listPillPlain({ ...base, open_day: { ...open, running: 0 } }, NOW), { tone: 'ok', text: 'Open day · until 9:02 am Mon 16 Nov' });
+  assert.deepEqual(listPillPlain({ ...base, open_day: open }, open.day_end_ms), { tone: 'ok', text: 'Saved · Sun 15 Nov' });
+  assert.deepEqual(listPillPlain({ ...base, last_outcome: 'saved', saved_date: '2026-11-14' }, NOW), { tone: 'ok', text: 'Saved · Sat 14 Nov' });
+  assert.deepEqual(listPillPlain(base, NOW), { tone: '', text: 'New · not started yet' });
+  assert.deepEqual(listPillPlain({ ...base, last_outcome: 'discarded' }, NOW), { tone: '', text: 'No open day' });
 });
 
 // ── charts ───────────────────────────────────────────────────────────────────
@@ -332,8 +359,8 @@ test('load: a refused press snaps back with the reason; a later press stays', ()
   const t = idle();
   let s = pressed(polled(LOADING, t), { id: 1, action: { kind: 'start', id: 1 }, at: 4000 });
   s = pressed(s, { id: 2, action: { kind: 'stop', id: 2 }, at: 4100 });
-  s = changeFailed(s, 1, new ApiError(409, 'This day has ended: only Stop and Stop all work.', 'day_ended'));
-  assert.equal(s.error, 'This day has ended: only Stop and Stop all work.');
+  s = changeFailed(s, 1, new ApiError(409, 'This day has ended and saved itself. Press Start today for the next one.', 'day_ended'));
+  assert.equal(s.error, 'This day has ended and saved itself. Press Start today for the next one.');
   assert.deepEqual(s.tracker!.timers.map((x) => [x.acc_ms, x.running_since_ms]), [[5000, null], [3100, null]]);
   // a press that never arrived snaps back too
   s = changeFailed(s, 2, OFFLINE);
@@ -342,6 +369,19 @@ test('load: a refused press snaps back with the reason; a later press stays', ()
 });
 
 // ── paths and the clock ──────────────────────────────────────────────────────
+
+test('load: at the open day\'s end the page shows it saved at once and drops presses still on their way', () => {
+  const open = day('2026-11-15', '09:02');
+  const t = tracker({ phase: 'live', open_day: open, timers: [timer(1, 'Writing', 0, open.day_end_ms - H)] });
+  const s = pressed(polled(LOADING, t), { id: 1, action: { kind: 'stop', id: 1 }, at: open.day_end_ms - 10 });
+  assert.equal(reachedEnd(s, open.day_end_ms - 1), s);
+  const e = reachedEnd(s, open.day_end_ms);
+  assert.deepEqual(e.pending, []);
+  assert.equal(e.tracker!.open_day, null);
+  assert.equal(e.tracker!.last_outcome, 'saved');
+  assert.deepEqual(e.tracker!.timers, [timer(1, 'Writing')]);
+  assert.equal(reachedEnd(LOADING, open.day_end_ms), LOADING);
+});
 
 test('tracker slugs from URLs', () => {
   assert.equal(slugOf('/time-track/workday'), 'workday');

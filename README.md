@@ -4,9 +4,13 @@ Time Track: multi-timer day tracker at akshayprabhakant.com/time-track (Cloudfla
 
 - A **Tracker** holds 1 to 15 **Timers**. **Start today** opens a **Day** for today's date,
   stamped with the date and time zone where it was pressed; one day per date.
-- That **Open day** stays until **Save last day** (into **History** and onto the **Charts
-  page**) or **Discard last day** (gone for good). Save unlocks once its date has ended in
-  its own time zone, with every timer stopped.
+- That **Open day** lasts exactly 24 hours from the moment it started, whatever the clock
+  read then (start at 11:59 pm, and it ends at 11:59 pm the next day). At its end it closes
+  itself: every running timer stops at the end, the day is saved into **History** and onto
+  the **Charts page**, and the timers go back to zero until the next Start today (which is
+  never pressed for you). Before its end, **Discard last day** deletes it for good.
+- The close happens on the server, on the first request for that tracker after the end, so
+  it holds with no tab open and the laptop shut, and counts no time past the end.
 - Signed in, times live on the server as start and stop timestamps, so every tab, browser
   and device shows the same values, and they keep running with the laptop shut.
 - Visitors who never signed in get ten browser-only timers and sample graphs.
