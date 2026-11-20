@@ -9,9 +9,8 @@
  * A day closes itself at its end (backend store.close_ended_days); `settled` shows that at the
  * end moment, before the server's next answer arrives.
  */
-import { clockTime, localDate, momentLabel } from './zones.ts';
-import { dateLabel, dur, untilLabel } from './format.ts';
-import { settleDemo, type Demo } from './demo.ts';
+import { clockTime, momentLabel } from './zones.ts';
+import { dateLabel, untilLabel } from './format.ts';
 import type { Timer, Tracker, TrackerSummary } from './types.ts';
 
 export type View = 'v4' | 'v7' | 'v10';
@@ -116,28 +115,6 @@ export function listPill(s: TrackerSummary, nowMs: number): Pill {
   }
   if (s.last_outcome === 'saved' && s.saved_date) return { tone: 'ok', text: `Saved · ${dateLabel(s.saved_date)}` };
   return { tone: '', text: s.last_outcome === null ? 'New · not started yet' : 'No open day' };
-}
-
-/** The public demo's day line, at `nowMs` in the visitor's zone `tz`. */
-export function demoPanel(demo: Demo, nowMs: number, tz: string): { pill: Pill; explain: string } {
-  const d = settleDemo(demo, nowMs);
-  if (d.day) {
-    const rc = runningCount(d.timers);
-    return {
-      pill: { tone: rc ? 'live' : 'ok', text: `Day open · ${nb(clockTime(d.day.start_ms, tz))} to ${nb(momentLabel(d.day.end_ms, tz))}${rc ? ` · ${rc} running` : ''}` },
-      explain: `Ends in ${nb(untilLabel(d.day.end_ms, nowMs))}: then every timer stops, the day is saved in this browser, and the timers go back to zero.`,
-    };
-  }
-  if (d.saved) {
-    return {
-      pill: { tone: 'ok', text: `Saved · ${dateLabel(localDate(d.saved.start_ms, tz))} · ${dur(d.saved.total_ms / 60000)} in all` },
-      explain: `That day ran from ${momentLabel(d.saved.start_ms, tz)} to ${momentLabel(d.saved.end_ms, tz)}. Every timer is back at zero: your next Start opens a new day.`,
-    };
-  }
-  return {
-    pill: { tone: '', text: 'No day open' },
-    explain: 'Your first Start opens a day of 24 hours. When it ends, every timer stops, the day is saved in this browser, and the timers go back to zero.',
-  };
 }
 
 export const RENAME_HINT: Record<CardMode, string> = {

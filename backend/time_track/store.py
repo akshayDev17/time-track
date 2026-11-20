@@ -5,9 +5,9 @@ one ``db.batch`` (one transaction). Every tracker read is scoped by ``user_id``.
 is a round trip to the database, so the tracker page's state is read in one batch
 (``read_state``), together with the write a timer button makes.
 
-Every read of a tracker first closes its day if the day's window has ended
-(``close_ended_days``), in the same batch, so no request ever sees or changes a day past its
-end: what the day saved does not depend on any tab being open when it ended.
+Every read of a tracker closes its day if the day's window has ended (``close_ended_days``),
+in the same batch, so no request ever sees a day past its end: what the day saved does not
+depend on any tab being open when it ended.
 """
 
 from __future__ import annotations
@@ -111,11 +111,13 @@ def _rows(result) -> list[dict]:
 
 
 async def read_state(db, user_id: int, slug: str, now_ms: int, writes: list = ()) -> dict | None:
-    """The tracker's state after closing its day if that has ended, then ``writes``, in one
+    """The tracker's state after ``writes``, then closing its day if that has ended, in one
     round trip: all of it and the reads run as one batch (one transaction), so what is read is
-    exactly what the writes left. ``None`` when the user has no such tracker (the writes,
-    scoped the same way, then touched nothing)."""
-    writes = [*close_ended_days(db, _ID, (user_id, slug), now_ms), *writes]
+    exactly what the writes and the close left: a Stop pressed before the end but heard after
+    it counts up to its press, not to the end; every other write needs the day live at now.
+    ``None`` when the user has no such tracker (the writes, scoped the same way, then touched
+    nothing)."""
+    writes = [*writes, *close_ended_days(db, _ID, (user_id, slug), now_ms)]
     results = await db.batch([*writes, *_state_reads(db, user_id, slug)])
     tracker, day, timers, saved, values = (_rows(r) for r in list(results)[len(writes):])
     if not tracker:

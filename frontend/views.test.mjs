@@ -141,14 +141,12 @@ test('every view and transition on the board', async () => {
   // ── 1 · public page, signed out ────────────────────────────────────────────
   await page.goto(`${app}/time-track`);
   await text(page, 'Ten stopwatches you can use right now.');
-  assert.equal(await content(page.locator('.demo-day .pill')), 'No day open');
   assert.equal(await page.locator('.tc').count(), 10);
   assert.equal(await page.locator('.grow').count(), 10);
   assert.equal(await page.locator('.tag.sample').count(), 11);
   assert.equal(await page.locator('.sp-app[aria-current="page"] .sp-label').textContent(), 'Time Track');
   await btn(page, 'Start timer 1').click();
   await page.locator('.tc.run').first().waitFor();
-  assert.match(await content(page.locator('.demo-day .pill')), /^Day open · \d{1,2}:\d{2} [ap]m to \d{1,2}:\d{2} [ap]m \w{3} \d{1,2} \w{3} · 1 running$/);
   assert.equal(await enabled(page, 'Clear all'), false);
   await text(page, 'Clear all waits until every timer is stopped.');
   await page.waitForTimeout(1200);
@@ -522,30 +520,5 @@ test('a day lasts 24 hours from its start, whatever the clock read, then closes 
   assert.equal(await page.locator('.grow.total .gtip').textContent(), 'Fri 20 Nov · 24 h 00 m', 'Deep work counted up to the end, not past it');
   await page.context().close();
   await dev('/__dev/session', { signed_in: false });
-  assert.deepEqual(errors, []);
-});
-
-test('the public demo keeps the same rule: 24 hours from its first start, then saved here and back to zero', async () => {
-  const page = await newPage();
-  await page.clock.install({ time: new Date('2026-11-20T23:59:00+05:30') });
-  await page.goto(`${app}/time-track`);
-  await text(page, 'Ten stopwatches you can use right now.');
-  await btn(page, 'Start timer 1').click();
-  await page.locator('.tc.run').first().waitFor();
-  assert.equal(await content(page.locator('.demo-day .pill')), 'Day open · 11:59 pm to 11:59 pm Sat 21 Nov · 1 running');
-  await page.clock.fastForward(2 * 60000);
-  assert.equal(await page.locator('.tc.run').count(), 1, 'still running past midnight');
-  await page.clock.fastForward(24 * 3600000 - 2 * 60000);
-  await text(page, 'Saved · Fri 20 Nov · 24 h 00 m in all');
-  await text(page, 'That day ran from 11:59 pm Fri 20 Nov to 11:59 pm Sat 21 Nov. Every timer is back at zero: your next Start opens a new day.');
-  assert.equal(await page.locator('.tc.run').count(), 0);
-  assert.equal(await page.locator('.tc-clear').count(), 0, 'every timer back at zero');
-  await look(page, 'v1-public-day-saved');
-  // a tab opened hours later sees the same
-  await page.clock.fastForward(5 * 3600000);
-  await page.reload();
-  await text(page, 'Saved · Fri 20 Nov · 24 h 00 m in all');
-  assert.equal(await page.locator('.tc-clear').count(), 0);
-  await page.context().close();
   assert.deepEqual(errors, []);
 });

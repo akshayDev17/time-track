@@ -2,68 +2,43 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { SIGN_IN_HREF } from '../../lib/api';
-import { actDemo, DEMO_KEY, freshDemo, loadDemo, saveDemo, settleDemo, type Demo } from '../../lib/demo';
-import type { TimerAction } from '../../lib/timers';
+import { DEMO_KEY, freshDemo, loadDemo, saveDemo } from '../../lib/demo';
+import { applyTimers, type TimerAction } from '../../lib/timers';
 import { dur, median } from '../../lib/format';
 import { SAMPLE_DAYS } from '../../lib/sample';
-import { demoPanel } from '../../lib/views';
-import { browserZone } from '../../lib/zones';
+import type { Timer } from '../../lib/types';
 import { ConfirmDialog } from './Dialog';
-import { ControlBar, GraphRow, Pill, RenameGrid, TimerCard, useTick } from './parts';
+import { ControlBar, GraphRow, RenameGrid, TimerCard } from './parts';
+
+const clock = () => Date.now();
 
 type Confirm = { kind: 'clear'; id: number } | { kind: 'clear-all' } | null;
 
-/** The stored demo as it stands now, its day closed and saved if its end has come. */
-function settledDemo(): Demo {
-  const now = Date.now();
-  const d = loadDemo(now);
-  const next = settleDemo(d, now);
-  if (next !== d) saveDemo(next);
-  return next;
-}
-
 /**
  * The public page (view 1): ten stopwatches that really run, in this browser only and shared
- * by its tabs, a day line (the first Start opens a day of 24 hours; at its end the timers stop,
- * the day is saved here and they go back to zero), the rename grid with Delete names, then one
- * sample graph per timer with its median card. Nothing reaches an account.
+ * by its tabs, the rename grid with Delete names, then one sample graph per timer with its
+ * median card. Nothing reaches an account.
  */
 export default function PublicDemo() {
-  const [stored, setStored] = useState<Demo>(freshDemo);
+  const [timers, setTimers] = useState<Timer[]>(freshDemo);
   const [confirm, setConfirm] = useState<Confirm>(null);
-  useTick(true, 1000); // the countdown
 
   useEffect(() => {
-    setStored(settledDemo());
+    setTimers(loadDemo());
     const onStorage = (e: StorageEvent) => {
-      if (e.key === DEMO_KEY) setStored(settledDemo());
+      if (e.key === DEMO_KEY) setTimers(loadDemo());
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  // At the day's end: close it, save it here and show every timer at zero, without a reload.
-  const end = stored.day?.end_ms;
-  useEffect(() => {
-    if (end === undefined) return;
-    const atEnd = setTimeout(() => setStored(settledDemo()), Math.max(0, end - Date.now() + 5));
-    return () => clearTimeout(atEnd);
-  }, [end]);
-
   const act = useCallback((a: TimerAction) => {
-    setStored((d) => {
-      const next = actDemo(d, a, Date.now());
+    setTimers((ts) => {
+      const next = applyTimers(ts, a, Date.now());
       saveDemo(next);
       return next;
     });
   }, []);
-
-  const now = Date.now();
-  const demo = settleDemo(stored, now);
-  const timers = demo.timers;
-  const dayEnd = demo.day?.end_ms ?? Infinity;
-  const clock = () => Math.min(Date.now(), dayEnd);
-  const panel = demoPanel(demo, now, browserZone());
 
   const name = (id: number) => {
     const i = timers.findIndex((t) => t.id === id);
@@ -73,13 +48,9 @@ export default function PublicDemo() {
   return (
     <>
       <p className="standfirst">
-        Ten stopwatches you can use right now. They run in this browser only and nothing reaches an account.{' '}
+        Ten stopwatches you can use right now. They run in this browser only and nothing is saved.{' '}
         <a className="inl" href={SIGN_IN_HREF}>Sign in</a> to keep trackers that run on every device and save each day.
       </p>
-      <div className="demo-day">
-        <Pill pill={panel.pill} />
-        <p className="dexp">{panel.explain}</p>
-      </div>
       <ControlBar timers={timers} mode="live" onAction={(a) => (a === 'clear-all' ? setConfirm({ kind: 'clear-all' }) : act({ kind: a }))} />
       <div className="tgrid">
         {timers.map((t, i) => (

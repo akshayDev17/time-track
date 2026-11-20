@@ -49,7 +49,7 @@ def _day(day: dict) -> dict:
 
 
 async def _read(db, user_id: int, slug: str, now_ms: int, writes: list = ()) -> dict:
-    """``store.read_state`` (after closing an ended day and ``writes``, in the same batch), or
+    """``store.read_state`` (after ``writes`` and closing an ended day, in the same batch), or
     ``NotFound``."""
     raw = await store.read_state(db, user_id, slug, now_ms, writes) if isinstance(slug, str) else None
     if raw is None:

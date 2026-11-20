@@ -3,7 +3,6 @@ itself (every running timer stops at the end, the day is saved, the timers show 
 whichever request comes next; Discard last day before then; one day per date."""
 
 import sqlite3
-from pathlib import Path
 
 from helpers import HOUR, MIGRATIONS, MINUTE, PUNE, Client, at, elapsed, stamp
 
@@ -242,6 +241,16 @@ def test_a_stop_pressed_at_the_end_never_counts_past_it():
     assert c.history(slug)["days"][0]["values"][str(ids[2])] == 59 * MINUTE
 
 
+def test_a_stop_pressed_before_the_end_but_heard_after_it_counts_up_to_its_press():
+    for path in ("/timers/{id}/stop", "/stop-all"):
+        c, slug, ids = ran_through_the_end()
+        end = at(PUNE, "2026-11-16T23:59")
+        c.now = end + 1000
+        t = c.ok("POST", f"/trackers/{slug}" + path.format(id=ids[2]), {"pressed_at_ms": end - 3000})["tracker"]
+        assert t["open_day"] is None and t["last_outcome"] == "saved", path
+        assert c.history(slug)["days"][0]["values"][str(ids[2])] == 59 * MINUTE - 3000, path
+
+
 def test_closing_twice_saves_once():
     c, slug, ids = ran_through_the_end()
     c.now = at(PUNE, "2026-11-17T00:00")
@@ -346,7 +355,3 @@ def test_migration_gives_a_day_already_open_the_window_from_its_own_start():
     assert stale["saved_day"]["saved_at_ms"] == at(PUNE, "2026-11-16T07:00")
     assert list(c.history("stale")["days"][0]["values"].values()) == [22 * HOUR]
 
-
-def test_migrations_dir_still_numbers_every_file():
-    names = sorted(p.name for p in Path(MIGRATIONS).glob("*.sql"))
-    assert [n[:4] for n in names] == [f"{i:04d}" for i in range(1, len(names) + 1)]

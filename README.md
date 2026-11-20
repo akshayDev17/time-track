@@ -13,9 +13,7 @@ Time Track: multi-timer day tracker at akshayprabhakant.com/time-track (Cloudfla
   it holds with no tab open and the laptop shut, and counts no time past the end.
 - Signed in, times live on the server as start and stop timestamps, so every tab, browser
   and device shows the same values, and they keep running with the laptop shut.
-- Visitors who never signed in get ten browser-only timers and sample graphs. Their first
-  Start opens a 24-hour day the same way; at its end the timers stop, the day is saved in
-  that browser and they go back to zero.
+- Visitors who never signed in get ten browser-only timers and sample graphs.
 
 ## Layout
 

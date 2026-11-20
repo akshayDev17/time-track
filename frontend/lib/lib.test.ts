@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { dateLabel, displayPieces, dur, median, timeParts, untilLabel } from './format.ts';
 import { clockTime, dayStamp, localDate, momentLabel, zoneLabel, zoneMidnight } from './zones.ts';
-import { cardClock, cardMode, dayPanel, demoPanel, listPill, settled, trackerView } from './views.ts';
+import { cardClock, cardMode, dayPanel, listPill, settled, trackerView } from './views.ts';
 import { charts, medianNote, rangeDays } from './charts.ts';
-import { actDemo, DAY_MS, freshDemo, parseDemo, settleDemo } from './demo.ts';
+import { freshDemo, parseDemo } from './demo.ts';
 import { applyTimers } from './timers.ts';
 import { SAMPLE_DAYS } from './sample.ts';
 import { slugOf } from './paths.ts';
@@ -18,7 +18,6 @@ const PUNE = 'Asia/Kolkata';
 const plain = <T,>(v: T): T => JSON.parse(JSON.stringify(v).replace(/\u00a0/g, ' '));
 const dayPanelPlain: typeof dayPanel = (...a) => plain(dayPanel(...a));
 const listPillPlain: typeof listPill = (...a) => plain(listPill(...a));
-const demoPanelPlain: typeof demoPanel = (...a) => plain(demoPanel(...a));
 const at = (iso: string, offset = '+05:30') => Date.parse(`${iso}${offset}`);
 const H = 3600000;
 const M = 60000;
@@ -239,7 +238,7 @@ test('charts: a removed timer draws nothing after its last saved day', () => {
 // ── the public demo ──────────────────────────────────────────────────────────
 
 test('demo: Start all only zeros, Relaunch only stopped with time, Clear all waits', () => {
-  let ts = freshDemo().timers;
+  let ts = freshDemo();
   ts = applyTimers(ts, { kind: 'start', id: 1 }, 0);
   ts = applyTimers(ts, { kind: 'stop', id: 1 }, 5000);
   ts = applyTimers(ts, { kind: 'start-all' }, 6000);
@@ -255,63 +254,8 @@ test('demo: Start all only zeros, Relaunch only stopped with time, Clear all wai
   ts = applyTimers(ts, { kind: 'rename', id: 3, name: 'Reading' }, 0);
   assert.equal(ts[2].name, 'Reading');
   assert.ok(applyTimers(ts, { kind: 'delete-names' }, 0).every((t) => t.name === ''));
-});
-
-test('demo: the first Start opens a day of 24 hours; renames and clears do not', () => {
-  const t0 = at('2026-11-20T23:59');
-  let d = actDemo(freshDemo(), { kind: 'rename', id: 1, name: 'Deep work' }, t0 - H);
-  assert.equal(d.day, null);
-  d = actDemo(d, { kind: 'start', id: 1 }, t0);
-  assert.deepEqual(d.day, { start_ms: t0, end_ms: t0 + DAY_MS });
-  d = actDemo(d, { kind: 'start', id: 2 }, t0 + H);
-  assert.equal(d.day!.start_ms, t0, 'a later start keeps the day');
-  const p = demoPanelPlain(d, t0 + H, PUNE);
-  assert.deepEqual(p.pill, { tone: 'live', text: 'Day open · 11:59 pm to 11:59 pm Sat 21 Nov · 2 running' });
-  assert.equal(p.explain, 'Ends in 23 h 00 m: then every timer stops, the day is saved in this browser, and the timers go back to zero.');
-  assert.equal(demoPanelPlain(freshDemo(), t0, PUNE).pill.text, 'No day open');
-});
-
-test('demo: at the end every timer stops at the end, the day is saved here, and they go back to zero', () => {
-  const t0 = at('2026-11-20T23:59');
-  let d = actDemo(freshDemo(), { kind: 'start', id: 1 }, t0);
-  d = actDemo(d, { kind: 'start', id: 2 }, t0 + 23 * H);
-  d = actDemo(d, { kind: 'stop', id: 2 }, t0 + 23 * H + 30 * M);
-  d = actDemo(d, { kind: 'rename', id: 1, name: 'Deep work' }, t0 + 2 * H);
-  assert.equal(settleDemo(d, t0 + DAY_MS - 1), d);
-  const end = t0 + DAY_MS;
-  for (const late of [end, end + 3 * DAY_MS]) {
-    const s = settleDemo(d, late);
-    assert.equal(s.day, null);
-    assert.deepEqual(s.saved, { start_ms: t0, end_ms: end, total_ms: DAY_MS + 30 * M });
-    assert.ok(s.timers.every((t) => t.acc_ms === 0 && t.running_since_ms === null));
-    assert.equal(s.timers[0].name, 'Deep work');
-  }
-  const s = settleDemo(d, end + H);
-  assert.deepEqual(demoPanelPlain(s, end + H, PUNE), {
-    pill: { tone: 'ok', text: 'Saved · Fri 20 Nov · 24 h 30 m in all' },
-    explain: 'That day ran from 11:59 pm Fri 20 Nov to 11:59 pm Sat 21 Nov. Every timer is back at zero: your next Start opens a new day.',
-  });
-  // a press after the end first closes the old day, then opens the next one
-  const next = actDemo(d, { kind: 'start', id: 3 }, end + H);
-  assert.deepEqual(next.saved, s.saved);
-  assert.deepEqual(next.day, { start_ms: end + H, end_ms: end + H + DAY_MS });
-  assert.equal(next.timers[0].running_since_ms, null);
-  assert.equal(next.timers[2].running_since_ms, end + H);
-});
-
-test('demo: stored state round-trips; timers kept before days existed get a day', () => {
-  const t0 = at('2026-11-20T09:00');
-  const d = actDemo(freshDemo(), { kind: 'start', id: 1 }, t0);
-  assert.deepEqual(parseDemo(JSON.stringify(d), t0 + H), d);
-  const saved = settleDemo(d, t0 + DAY_MS);
-  assert.deepEqual(parseDemo(JSON.stringify(saved), t0 + DAY_MS), saved);
-  assert.deepEqual(parseDemo('nope', t0), freshDemo());
-  assert.deepEqual(parseDemo(JSON.stringify({ day: { start_ms: 1, end_ms: 5 }, timers: d.timers, saved: null }), t0).day, null, 'a day that is not 24 hours is dropped');
-  // a bare list of timers, one running since 07:00 and one with time
-  const legacy = freshDemo().timers.map((t, i) => (i === 0 ? { ...t, running_since_ms: at('2026-11-20T07:00') } : i === 1 ? { ...t, acc_ms: 5 * M } : t));
-  assert.deepEqual(parseDemo(JSON.stringify(legacy), t0).day, { start_ms: at('2026-11-20T07:00'), end_ms: at('2026-11-21T07:00') });
-  assert.deepEqual(parseDemo(JSON.stringify(legacy.map((t) => ({ ...t, running_since_ms: null }))), t0).day, { start_ms: t0, end_ms: t0 + DAY_MS });
-  assert.equal(parseDemo(JSON.stringify(freshDemo().timers), t0).day, null);
+  assert.deepEqual(parseDemo(JSON.stringify(ts)), ts);
+  assert.deepEqual(parseDemo('nope'), freshDemo());
 });
 
 test('sample data is fixed: ten timers, thirty days', () => {
