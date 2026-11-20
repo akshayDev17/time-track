@@ -6,7 +6,6 @@
  */
 import { dateLabel } from './format.ts';
 
-
 export type DayStamp = { date: string; tz: string; tz_label: string; day_start_ms: number; day_end_ms: number };
 
 export function browserZone(): string {
